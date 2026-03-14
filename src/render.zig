@@ -44,6 +44,7 @@ pub fn draw(
     preview_state: ?PreviewState,
     clip_op: mode_mod.ClipOp,
     clip_count: usize,
+    create_buf: []const u8,
 ) void {
     const width = win.width;
     const height = win.height;
@@ -89,7 +90,7 @@ pub fn draw(
     draw_entries(alloc, main, dir_state, cursor, scroll_offset, list_height, inner_w, name_w, size_w, current_mode, edit_cursor_col);
 
     // Draw status bar
-    draw_status(alloc, main, inner_w, inner_h, current_mode, pending_key, cursor, dir_state, search_query, message, clip_op, clip_count);
+    draw_status(alloc, main, inner_w, inner_h, current_mode, pending_key, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf);
 
     // Draw confirm popup if in confirm mode
     if (current_mode == .confirm) {
@@ -362,6 +363,7 @@ fn draw_status(
     message: ?[]const u8,
     clip_op: mode_mod.ClipOp,
     clip_count: usize,
+    create_buf: []const u8,
 ) void {
     const status_row: u16 = @intCast(height -| 1);
 
@@ -382,6 +384,7 @@ fn draw_status(
         .confirm => " CONFIRM ",
         .help => " HELP ",
         .preview => " PREVIEW ",
+        .create => " CREATE ",
     };
     const mode_style = switch (current_mode) {
         .normal, .help => style.status_normal_style,
@@ -390,6 +393,7 @@ fn draw_status(
         .replace => style.status_replace_style,
         .confirm => style.status_edit_style,
         .preview => style.status_normal_style,
+        .create => style.status_search_style,
     };
 
     _ = win.printSegment(.{
@@ -423,6 +427,16 @@ fn draw_status(
             .text = info,
             .style = style.status_info_style,
         }, .{ .row_offset = status_row, .col_offset = offset });
+    } else if (current_mode == .create) {
+        const hint: []const u8 = if (create_buf.len > 0 and create_buf[create_buf.len - 1] == '/') "(dir) " else "(file) ";
+        const info = std.fmt.allocPrint(alloc, "New {s}{s}", .{ hint, create_buf }) catch return;
+        _ = win.printSegment(.{
+            .text = info,
+            .style = style.status_info_style,
+        }, .{ .row_offset = status_row, .col_offset = offset });
+        // Show cursor
+        const cursor_col = offset + @as(u16, @intCast(info.len));
+        win.showCursor(cursor_col, status_row);
     } else if (message) |msg| {
         _ = win.printSegment(.{
             .text = msg,
@@ -591,6 +605,7 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "  y l         Copy path to clipboard",
         "  d d         Cut to clipboard",
         "  D           Delete",
+        "  n           New file/dir",
         "  p           Paste",
         "  C-l         Preview file",
         "  s           Open shell here",

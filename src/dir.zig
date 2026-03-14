@@ -178,25 +178,6 @@ pub const DirState = struct {
         }
     }
 
-    pub fn mark_edit_delete(self: *DirState, filtered_idx: usize) void {
-        if (filtered_idx >= self.edit_names.items.len) return;
-        self.edit_names.items[filtered_idx].clearRetainingCapacity();
-        self.has_edits = true;
-    }
-
-    pub fn mark_edit_delete_selected(self: *DirState) bool {
-        var any = false;
-        for (self.filtered_entries.items, 0..) |real_idx, i| {
-            if (i >= self.edit_names.items.len) break;
-            if (self.all_entries.items[real_idx].selected) {
-                self.edit_names.items[i].clearRetainingCapacity();
-                self.has_edits = true;
-                any = true;
-            }
-        }
-        return any;
-    }
-
     pub fn has_selection(self: *const DirState) bool {
         for (self.filtered_entries.items) |real_idx| {
             if (self.all_entries.items[real_idx].selected) return true;
@@ -243,7 +224,9 @@ pub const DirState = struct {
                 },
                 .delete => |name| {
                     dir.deleteFile(name) catch {
-                        dir.deleteDir(name) catch continue;
+                        dir.deleteTree(name) catch continue;
+                        applied += 1;
+                        continue;
                     };
                     applied += 1;
                 },

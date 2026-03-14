@@ -9,6 +9,7 @@ pub const Mode = enum {
     confirm,
     help,
     preview,
+    create,
 };
 
 pub const ReplaceField = enum {

@@ -50,6 +50,9 @@ pub const App = struct {
 
     frame_arena: std.heap.ArenaAllocator,
 
+    // Create mode
+    create_buf: std.ArrayList(u8),
+
     // Clipboard
     clip_entries: std.ArrayList([]const u8), // full paths
     clip_op: mode_mod.ClipOp,
@@ -87,6 +90,7 @@ pub const App = struct {
             .preview_is_dir = false,
             .preview_total_lines = 0,
             .frame_arena = std.heap.ArenaAllocator.init(allocator),
+            .create_buf = .{},
             .clip_entries = .{},
             .clip_op = .none,
             .should_quit = false,
@@ -116,6 +120,7 @@ pub const App = struct {
         self.search_buf.deinit(self.allocator);
         self.replace_find_buf.deinit(self.allocator);
         self.replace_with_buf.deinit(self.allocator);
+        self.create_buf.deinit(self.allocator);
         if (self.confirm_ops) |*ops| ops.deinit(self.allocator);
         self.free_preview_lines();
         self.preview_lines.deinit(self.allocator);
@@ -151,6 +156,7 @@ pub const App = struct {
                     .confirm => try self.handle_confirm(key),
                     .help => self.handle_help(key),
                     .preview => self.handle_preview(key),
+                    .create => try self.handle_create(key),
                 }
             },
         }
@@ -196,9 +202,10 @@ pub const App = struct {
             preview_state,
             self.clip_op,
             self.clip_entries.items.len,
+            self.create_buf.items,
         );
 
-        if (self.mode != .edit and self.mode != .replace) {
+        if (self.mode != .edit and self.mode != .replace and self.mode != .create) {
             win.hideCursor();
         }
     }
@@ -241,6 +248,9 @@ pub const App = struct {
             try self.enter_replace_mode();
         } else if (key.matches('i', .{})) {
             try self.enter_edit_mode();
+        } else if (key.matches('n', .{})) {
+            self.mode = .create;
+            self.create_buf.clearRetainingCapacity();
         } else if (key.matches('.', .{})) {
             try self.dir_state.toggle_hidden();
             self.clamp_cursor();
@@ -436,23 +446,132 @@ pub const App = struct {
         self.scroll_offset = 0;
     }
 
+    // ─── CREATE MODE ───
+
+    fn handle_create(self: *App, key: vaxis.Key) !void {
+        if (key.matches(vaxis.Key.escape, .{})) {
+            self.mode = .normal;
+            self.create_buf.clearRetainingCapacity();
+            return;
+        }
+
+        if (key.matches(vaxis.Key.enter, .{})) {
+            if (self.create_buf.items.len == 0) {
+                self.mode = .normal;
+                return;
+            }
+
+            const name = self.create_buf.items;
+            const is_dir = name[name.len - 1] == '/';
+            const actual_name = if (is_dir) name[0 .. name.len - 1] else name;
+
+            if (actual_name.len == 0) {
+                self.mode = .normal;
+                self.create_buf.clearRetainingCapacity();
+                return;
+            }
+
+            var dir = std.fs.openDirAbsolute(self.dir_state.path, .{}) catch |err| {
+                const msg = std.fmt.bufPrint(&self.message_buf, "Error: {s}", .{@errorName(err)}) catch "Error";
+                self.message = msg;
+                self.mode = .normal;
+                return;
+            };
+            defer dir.close();
+
+            if (is_dir) {
+                dir.makeDir(actual_name) catch |err| {
+                    const msg = std.fmt.bufPrint(&self.message_buf, "mkdir failed: {s}", .{@errorName(err)}) catch "mkdir failed";
+                    self.message = msg;
+                    self.mode = .normal;
+                    return;
+                };
+                const msg = std.fmt.bufPrint(&self.message_buf, "Created dir: {s}", .{actual_name}) catch "Created";
+                self.message = msg;
+            } else {
+                const file = dir.createFile(actual_name, .{ .exclusive = true }) catch |err| {
+                    const msg = std.fmt.bufPrint(&self.message_buf, "Create failed: {s}", .{@errorName(err)}) catch "Create failed";
+                    self.message = msg;
+                    self.mode = .normal;
+                    return;
+                };
+                file.close();
+                const msg = std.fmt.bufPrint(&self.message_buf, "Created file: {s}", .{actual_name}) catch "Created";
+                self.message = msg;
+            }
+
+            self.mode = .normal;
+            self.create_buf.clearRetainingCapacity();
+
+            const path_copy = try self.allocator.dupe(u8, self.dir_state.path);
+            defer self.allocator.free(path_copy);
+            self.dir_state.scan(path_copy) catch {};
+            self.clamp_cursor();
+            return;
+        }
+
+        if (key.matches(vaxis.Key.backspace, .{})) {
+            if (self.create_buf.items.len > 0) {
+                _ = self.create_buf.pop();
+            }
+        } else if (key.text) |text| {
+            try self.create_buf.appendSlice(self.allocator, text);
+        } else if (key.codepoint >= 32 and key.codepoint < 127) {
+            try self.create_buf.append(self.allocator, @intCast(key.codepoint));
+        }
+    }
+
     // ─── CONFIRM MODE ───
 
     fn handle_confirm(self: *App, key: vaxis.Key) !void {
         if (key.matches('y', .{}) or key.matches(vaxis.Key.enter, .{})) {
-            const applied = self.dir_state.apply_edits() catch |err| {
+            const ops = self.confirm_ops orelse {
+                self.mode = .normal;
+                return;
+            };
+
+            var applied: usize = 0;
+            var dir = std.fs.openDirAbsolute(self.dir_state.path, .{}) catch |err| {
                 const msg = std.fmt.bufPrint(&self.message_buf, "Error: {s}", .{@errorName(err)}) catch "Error";
                 self.message = msg;
                 self.mode = .normal;
-                if (self.confirm_ops) |*ops| ops.deinit(self.allocator);
                 self.confirm_ops = null;
                 return;
             };
+            defer dir.close();
+
+            for (ops.items) |op| {
+                switch (op) {
+                    .rename => |r| {
+                        dir.rename(r.from, r.to) catch continue;
+                        applied += 1;
+                    },
+                    .delete => |name| {
+                        // Try as file first, then as directory tree
+                        dir.deleteFile(name) catch {
+                            dir.deleteTree(name) catch |err| {
+                                const msg = std.fmt.bufPrint(&self.message_buf, "Delete failed: {s}", .{@errorName(err)}) catch "Delete failed";
+                                self.message = msg;
+                                continue;
+                            };
+                            applied += 1;
+                            continue;
+                        };
+                        applied += 1;
+                    },
+                }
+            }
+
+            if (self.confirm_ops) |*o| o.deinit(self.allocator);
+            self.confirm_ops = null;
+
+            const path_copy = try self.allocator.dupe(u8, self.dir_state.path);
+            defer self.allocator.free(path_copy);
+            self.dir_state.scan(path_copy) catch {};
+
             const msg = std.fmt.bufPrint(&self.message_buf, "{d} operation(s) applied", .{applied}) catch "Done";
             self.message = msg;
             self.mode = .normal;
-            if (self.confirm_ops) |*ops| ops.deinit(self.allocator);
-            self.confirm_ops = null;
             self.clamp_cursor();
         } else if (key.matches('n', .{}) or key.matches(vaxis.Key.escape, .{})) {
             self.mode = .normal;
