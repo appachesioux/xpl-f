@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=xplr-f - File Explorer
+Comment=File Explorer
+Exec=/usr/bin/xplr-f
+Icon=xplr-f
+Type=Application
+Terminal=true
+Categories=Utility;
+Keywords=find;files;search;

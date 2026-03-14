@@ -1,0 +1,4 @@
+/.zig-cache
+/zig-out/bin
+/CLAUDE.md
+/0-deploy
