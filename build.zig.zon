@@ -1,6 +1,6 @@
 .{
     .fingerprint = 0x1016bfb3d6d689f0,
-    .name = .xplr_f,
+    .name = .xpl_f,
     .version = "0.2.1",
     .dependencies = .{
         .vaxis = .{

@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=xplr-f - File Explorer
+Name=xpl-f - File Explorer
 Comment=File Explorer
-Exec=/usr/bin/xplr-f
-Icon=xplr-f
+Exec=/usr/bin/xpl-f
+Icon=xpl-f
 Type=Application
 Terminal=true
 Categories=Utility;

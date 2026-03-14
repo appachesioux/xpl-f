@@ -12,15 +12,15 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", zon.version);
-    options.addOption([]const u8, "app_name", "xplr-f");
+    options.addOption([]const u8, "app_name", "xpl-f");
 
     const exe = b.addExecutable(.{
-        // .name = "xplr-f",
+        // .name = "xpl-f",
         .name = switch (target.result.os.tag) {
-            // .linux => "xplr-f-linux",
-            .macos => "xplr-f-macos",
-            .windows => "xplr-f-windows",
-            else => "xplr-f",
+            // .linux => "xpl-f-linux",
+            .macos => "xpl-f-macos",
+            .windows => "xpl-f-windows",
+            else => "xpl-f",
         },
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
@@ -41,6 +41,6 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const run_step = b.step("run", "Run xplr-f");
+    const run_step = b.step("run", "Run xpl-f");
     run_step.dependOn(&run_cmd.step);
 }

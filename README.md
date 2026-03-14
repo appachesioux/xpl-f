@@ -1,4 +1,4 @@
-# xplr-f
+# xpl-f
 
 File explorer TUI, built as a study project for learning Zig.
 
@@ -19,7 +19,7 @@ zig build run                     # run direto
 zig build run -- /path/to/dir     # abrir em diretório específico
 ```
 
-O binário fica em `zig-out/bin/xplr-f`. Deploy script em `xplr-deploy`.
+O binário fica em `zig-out/bin/xpl-f`. Deploy script em `xpl-deploy`.
 
 ## Arquitetura
 
