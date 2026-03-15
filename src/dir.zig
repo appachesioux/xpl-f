@@ -241,6 +241,64 @@ pub const DirState = struct {
     }
 };
 
+pub fn recursive_walk(
+    allocator: std.mem.Allocator,
+    arena: *std.heap.ArenaAllocator,
+    base_path: []const u8,
+    show_hidden: bool,
+    max_results: usize,
+) !std.ArrayList([]const u8) {
+    var results: std.ArrayList([]const u8) = .{};
+    const arena_alloc = arena.allocator();
+
+    var dir = std.fs.openDirAbsolute(base_path, .{ .iterate = true }) catch return results;
+    defer dir.close();
+
+    var walker = dir.walk(allocator) catch return results;
+    defer walker.deinit();
+
+    while (results.items.len < max_results) {
+        const entry = walker.next() catch break;
+        if (entry == null) break;
+        const e = entry.?;
+
+        // Skip hidden directories/files
+        if (!show_hidden) {
+            const basename = e.basename;
+            if (basename.len > 0 and basename[0] == '.') continue;
+
+            // Check if any path component is hidden
+            var skip = false;
+            var path_iter = std.mem.splitScalar(u8, e.path, '/');
+            while (path_iter.next()) |component| {
+                if (component.len > 0 and component[0] == '.') {
+                    skip = true;
+                    break;
+                }
+            }
+            if (skip) continue;
+        }
+
+        // Skip known heavy directories
+        const basename = e.basename;
+        if (std.mem.eql(u8, basename, "node_modules") or
+            std.mem.eql(u8, basename, "target") or
+            std.mem.eql(u8, basename, "__pycache__"))
+        {
+            continue;
+        }
+
+        const path_dupe = arena_alloc.dupe(u8, e.path) catch break;
+        results.append(allocator, path_dupe) catch break;
+    }
+
+    return results;
+}
+
+pub fn fuzzy_match_pub(name: []const u8, query: []const u8) bool {
+    return fuzzy_match(name, query);
+}
+
 fn fuzzy_match(name: []const u8, query: []const u8) bool {
     if (query.len > name.len) return false;
     for (0..name.len -| query.len + 1) |i| {

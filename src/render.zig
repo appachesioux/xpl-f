@@ -14,6 +14,14 @@ pub const ReplaceState = struct {
     active_field: mode_mod.ReplaceField,
 };
 
+pub const FindState = struct {
+    query: []const u8,
+    results: *const std.ArrayList([]const u8),
+    filtered: []const usize,
+    cursor: usize,
+    scroll: usize,
+};
+
 pub const PreviewState = struct {
     lines: []const []const u8,
     scroll: usize,
@@ -45,6 +53,7 @@ pub fn draw(
     clip_op: mode_mod.ClipOp,
     clip_count: usize,
     create_buf: []const u8,
+    find_state: ?FindState,
 ) void {
     const width = win.width;
     const height = win.height;
@@ -115,6 +124,13 @@ pub fn draw(
     if (current_mode == .preview) {
         if (preview_state) |ps| {
             draw_preview(alloc, win, width, height, ps);
+        }
+    }
+
+    // Draw find popup
+    if (current_mode == .find) {
+        if (find_state) |fs| {
+            draw_find(alloc, win, width, height, fs);
         }
     }
 }
@@ -385,11 +401,12 @@ fn draw_status(
         .help => " HELP ",
         .preview => " PREVIEW ",
         .create => " CREATE ",
+        .find => " FIND ",
     };
     const mode_style = switch (current_mode) {
         .normal, .help => style.status_normal_style,
         .edit => style.status_edit_style,
-        .search => style.status_search_style,
+        .search, .find => style.status_search_style,
         .replace => style.status_replace_style,
         .confirm => style.status_edit_style,
         .preview => style.status_normal_style,
@@ -597,6 +614,7 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "  g g         Go to top",
         "  G           Go to bottom",
         "  /           Search",
+        "  ?           Find recursive",
         "  r           Search & Replace",
         "  i           Edit mode",
         "  .           Toggle hidden",
@@ -773,6 +791,91 @@ fn draw_preview(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: 
             .style = style.dim_style,
         }, .{ .row_offset = hint_row, .col_offset = pos_col });
     }
+}
+
+fn draw_find(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, fs: FindState) void {
+    const popup_w: u16 = @intCast(@max(@min(total_w *| 4 / 5, total_w -| 4), 30));
+    const popup_h: u16 = @intCast(@max(@min(total_h *| 4 / 5, total_h -| 4), 8));
+    if (popup_w < 20 or popup_h < 6) return;
+
+    const x_off: i17 = @intCast((total_w - popup_w) / 2);
+    const y_off: i17 = @intCast((total_h - popup_h) / 2);
+
+    const popup = win.child(.{
+        .x_off = x_off,
+        .y_off = y_off,
+        .width = popup_w,
+        .height = popup_h,
+        .border = .{
+            .where = .all,
+            .glyphs = .single_rounded,
+            .style = style.confirm_border_style,
+        },
+    });
+
+    popup.clear();
+
+    const inner_w = if (popup.width > 0) popup.width else return;
+    const inner_h = if (popup.height > 0) popup.height else return;
+
+    // Search input line
+    const query_text = std.fmt.allocPrint(alloc, " find: {s}", .{fs.query}) catch return;
+    _ = popup.printSegment(.{
+        .text = query_text,
+        .style = style.title_style,
+    }, .{ .row_offset = 0, .col_offset = 0 });
+
+    // Show cursor
+    const cursor_col: u16 = @intCast(@as(i17, x_off) + 1 + @as(i17, @intCast(query_text.len)));
+    const cursor_row: u16 = @intCast(@as(i17, y_off) + 1);
+    win.showCursor(cursor_col, cursor_row);
+
+    // Result count
+    const count_text = std.fmt.allocPrint(alloc, " {d}/{d}", .{ fs.filtered.len, fs.results.items.len }) catch return;
+    const count_col: u16 = @intCast(inner_w -| count_text.len);
+    _ = popup.printSegment(.{
+        .text = count_text,
+        .style = style.dim_style,
+    }, .{ .row_offset = 0, .col_offset = count_col });
+
+    // Results list
+    const list_h = inner_h -| 2; // reserve row 0 for query, last row for hints
+    var row: usize = 0;
+    var idx = fs.scroll;
+    while (row < list_h and idx < fs.filtered.len) : ({
+        row += 1;
+        idx += 1;
+    }) {
+        const real_idx = fs.filtered[idx];
+        const path = fs.results.items[real_idx];
+        const display_row: u16 = @intCast(row + 1);
+        const is_cursor = idx == fs.cursor;
+
+        // Highlight cursor line
+        if (is_cursor) {
+            for (0..inner_w) |x| {
+                popup.writeCell(@intCast(x), display_row, .{
+                    .char = .{ .grapheme = " ", .width = 1 },
+                    .style = .{ .reverse = true },
+                });
+            }
+        }
+
+        const indicator: []const u8 = if (is_cursor) " > " else "   ";
+        const line = std.fmt.allocPrint(alloc, "{s}{s}", .{ indicator, path }) catch continue;
+        const entry_style: vaxis.Style = if (is_cursor) .{ .reverse = true } else style.file_style;
+        _ = popup.printSegment(.{
+            .text = line,
+            .style = entry_style,
+        }, .{ .row_offset = display_row, .col_offset = 0 });
+    }
+
+    // Hints at the bottom
+    const hint_row: u16 = @intCast(inner_h -| 1);
+    _ = popup.printSegment(.{
+        .text = "j/k=Navigate  Enter=Go  Esc=Cancel",
+        .style = style.dim_style,
+    }, .{ .row_offset = hint_row, .col_offset = 1 });
 }
 
 fn tab_expand(alloc: std.mem.Allocator, line: []const u8, max_w: usize) ![]const u8 {

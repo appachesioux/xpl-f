@@ -10,6 +10,7 @@ pub const Mode = enum {
     help,
     preview,
     create,
+    find,
 };
 
 pub const ReplaceField = enum {

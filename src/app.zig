@@ -57,6 +57,14 @@ pub const App = struct {
     clip_entries: std.ArrayList([]const u8), // full paths
     clip_op: mode_mod.ClipOp,
 
+    // Find mode (recursive search)
+    find_buf: std.ArrayList(u8),
+    find_all_paths: std.ArrayList([]const u8),
+    find_filtered: std.ArrayList(usize),
+    find_cursor: usize,
+    find_scroll: usize,
+    find_arena: std.heap.ArenaAllocator,
+
     should_quit: bool,
 
     pub fn init(allocator: std.mem.Allocator, initial_dir: ?[]const u8) !*App {
@@ -93,6 +101,12 @@ pub const App = struct {
             .create_buf = .{},
             .clip_entries = .{},
             .clip_op = .none,
+            .find_buf = .{},
+            .find_all_paths = .{},
+            .find_filtered = .{},
+            .find_cursor = 0,
+            .find_scroll = 0,
+            .find_arena = std.heap.ArenaAllocator.init(allocator),
             .should_quit = false,
         };
 
@@ -125,6 +139,10 @@ pub const App = struct {
         self.free_preview_lines();
         self.preview_lines.deinit(self.allocator);
         self.free_clipboard();
+        self.find_buf.deinit(self.allocator);
+        self.find_all_paths.deinit(self.allocator);
+        self.find_filtered.deinit(self.allocator);
+        self.find_arena.deinit();
         self.frame_arena.deinit();
         self.dir_state.deinit();
         self.loop.stop();
@@ -157,6 +175,7 @@ pub const App = struct {
                     .help => self.handle_help(key),
                     .preview => self.handle_preview(key),
                     .create => try self.handle_create(key),
+                    .find => try self.handle_find(key),
                 }
             },
         }
@@ -186,6 +205,14 @@ pub const App = struct {
             .total_lines = self.preview_total_lines,
         } else null;
 
+        const find_state: ?render.FindState = if (self.mode == .find) .{
+            .query = self.find_buf.items,
+            .results = &self.find_all_paths,
+            .filtered = self.find_filtered.items,
+            .cursor = self.find_cursor,
+            .scroll = self.find_scroll,
+        } else null;
+
         render.draw(
             frame_alloc,
             win,
@@ -203,6 +230,7 @@ pub const App = struct {
             self.clip_op,
             self.clip_entries.items.len,
             self.create_buf.items,
+            find_state,
         );
 
         if (self.mode != .edit and self.mode != .replace and self.mode != .create) {
@@ -268,6 +296,8 @@ pub const App = struct {
             self.run_external("ff");
         } else if (key.matches('f', .{ .ctrl = true })) {
             self.run_external("gg");
+        } else if (key.matches('?', .{})) {
+            try self.enter_find_mode();
         } else if (key.matches(vaxis.Key.f1, .{})) {
             self.mode = .help;
         }
@@ -608,6 +638,153 @@ pub const App = struct {
         } else if (key.matches('g', .{})) {
             self.preview_scroll = 0;
         }
+    }
+
+    // ─── FIND MODE (recursive search) ───
+
+    fn enter_find_mode(self: *App) !void {
+        self.find_buf.clearRetainingCapacity();
+        self.find_all_paths.clearRetainingCapacity();
+        self.find_filtered.clearRetainingCapacity();
+        _ = self.find_arena.reset(.retain_capacity);
+        self.find_cursor = 0;
+        self.find_scroll = 0;
+
+        // Walk the current directory recursively
+        self.find_all_paths = try dir_mod.recursive_walk(
+            self.allocator,
+            &self.find_arena,
+            self.dir_state.path,
+            self.dir_state.show_hidden,
+            10000,
+        );
+
+        // Initially all results are visible
+        for (0..self.find_all_paths.items.len) |i| {
+            try self.find_filtered.append(self.allocator, i);
+        }
+
+        self.mode = .find;
+    }
+
+    fn handle_find(self: *App, key: vaxis.Key) !void {
+        if (key.matches(vaxis.Key.escape, .{})) {
+            self.mode = .normal;
+            return;
+        }
+
+        if (key.matches(vaxis.Key.enter, .{})) {
+            try self.find_navigate();
+            return;
+        }
+
+        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+            if (self.find_filtered.items.len > 0 and self.find_cursor + 1 < self.find_filtered.items.len) {
+                self.find_cursor += 1;
+                self.adjust_find_scroll();
+            }
+            return;
+        }
+        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+            if (self.find_cursor > 0) {
+                self.find_cursor -= 1;
+                self.adjust_find_scroll();
+            }
+            return;
+        }
+        if (key.matches('G', .{})) {
+            if (self.find_filtered.items.len > 0) {
+                self.find_cursor = self.find_filtered.items.len - 1;
+                self.adjust_find_scroll();
+            }
+            return;
+        }
+        if (key.matches('g', .{})) {
+            self.find_cursor = 0;
+            self.find_scroll = 0;
+            return;
+        }
+
+        // Text input
+        if (key.matches(vaxis.Key.backspace, .{})) {
+            if (self.find_buf.items.len > 0) {
+                _ = self.find_buf.pop();
+            }
+        } else if (key.text) |text| {
+            try self.find_buf.appendSlice(self.allocator, text);
+        } else if (key.codepoint >= 32 and key.codepoint < 127) {
+            try self.find_buf.append(self.allocator, @intCast(key.codepoint));
+        } else {
+            return;
+        }
+
+        // Re-filter
+        self.find_filtered.clearRetainingCapacity();
+        if (self.find_buf.items.len == 0) {
+            for (0..self.find_all_paths.items.len) |i| {
+                try self.find_filtered.append(self.allocator, i);
+            }
+        } else {
+            for (self.find_all_paths.items, 0..) |path, i| {
+                if (dir_mod.fuzzy_match_pub(path, self.find_buf.items)) {
+                    try self.find_filtered.append(self.allocator, i);
+                }
+            }
+        }
+        self.find_cursor = 0;
+        self.find_scroll = 0;
+    }
+
+    fn adjust_find_scroll(self: *App) void {
+        // Keep cursor visible in popup (estimate ~20 visible lines)
+        const visible: usize = 20;
+        if (self.find_cursor < self.find_scroll) {
+            self.find_scroll = self.find_cursor;
+        } else if (self.find_cursor >= self.find_scroll + visible) {
+            self.find_scroll = self.find_cursor - visible + 1;
+        }
+    }
+
+    fn find_navigate(self: *App) !void {
+        if (self.find_filtered.items.len == 0) {
+            self.mode = .normal;
+            return;
+        }
+
+        const idx = self.find_filtered.items[self.find_cursor];
+        const rel_path = self.find_all_paths.items[idx];
+
+        // Build full path
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ self.dir_state.path, rel_path }) catch {
+            self.mode = .normal;
+            return;
+        };
+
+        // Get the directory containing the target
+        const dir_path = std.fs.path.dirname(full_path) orelse {
+            self.mode = .normal;
+            return;
+        };
+
+        const basename = std.fs.path.basename(full_path);
+
+        // Navigate to the directory
+        try self.dir_state.scan(dir_path);
+        self.cursor = 0;
+        self.scroll_offset = 0;
+
+        // Try to position cursor on the target file
+        for (self.dir_state.filtered_entries.items, 0..) |real_idx, i| {
+            const e = self.dir_state.all_entries.items[real_idx];
+            if (std.mem.eql(u8, e.name, basename)) {
+                self.cursor = i;
+                self.adjust_scroll();
+                break;
+            }
+        }
+
+        self.mode = .normal;
     }
 
     fn open_preview(self: *App) void {
