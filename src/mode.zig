@@ -11,6 +11,7 @@ pub const Mode = enum {
     preview,
     create,
     find,
+    bookmark,
 };
 
 pub const ReplaceField = enum {

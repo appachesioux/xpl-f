@@ -70,6 +70,8 @@ src/
 - `Ctrl+l`: preview flutuante
 - `.`: toggle hidden files
 - `Space`: selecionar
+- `m`: toggle bookmark no diretório atual
+- `'`: abrir lista de bookmarks
 - `q`: sair
 
 ### Preview
@@ -94,7 +96,7 @@ src/
 
 ## Ideias futuras
 
-- **Bookmarks**: salvar diretórios favoritos, navegar rápido (ex: `m` para marcar, `'` para ir)
+- ~~**Bookmarks**: salvar diretórios favoritos, navegar rápido (ex: `m` para marcar, `'` para ir)~~ (implementado: m/'/d)
 - ~~**Copiar/mover arquivos**: `cp`/`mv` com seleção múltipla, cut/paste style~~ (implementado: yy/dd/p)
 - **Syntax highlighting no preview**: colorir código por linguagem no popup de preview
 - **Tabs ou split panes**: múltiplos diretórios abertos simultaneamente

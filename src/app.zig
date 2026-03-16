@@ -65,6 +65,11 @@ pub const App = struct {
     find_scroll: usize,
     find_arena: std.heap.ArenaAllocator,
 
+    // Bookmark mode
+    bookmarks: std.ArrayList([]const u8),
+    bookmark_cursor: usize,
+    bookmark_scroll: usize,
+
     should_quit: bool,
 
     pub fn init(allocator: std.mem.Allocator, initial_dir: ?[]const u8) !*App {
@@ -107,6 +112,9 @@ pub const App = struct {
             .find_cursor = 0,
             .find_scroll = 0,
             .find_arena = std.heap.ArenaAllocator.init(allocator),
+            .bookmarks = .{},
+            .bookmark_cursor = 0,
+            .bookmark_scroll = 0,
             .should_quit = false,
         };
 
@@ -127,6 +135,8 @@ pub const App = struct {
         const resolved = try std.fs.cwd().realpath(start_dir, &path_buf);
         try self.dir_state.scan(resolved);
 
+        self.load_bookmarks();
+
         return self;
     }
 
@@ -143,6 +153,8 @@ pub const App = struct {
         self.find_all_paths.deinit(self.allocator);
         self.find_filtered.deinit(self.allocator);
         self.find_arena.deinit();
+        self.free_bookmarks();
+        self.bookmarks.deinit(self.allocator);
         self.frame_arena.deinit();
         self.dir_state.deinit();
         self.loop.stop();
@@ -176,6 +188,7 @@ pub const App = struct {
                     .preview => self.handle_preview(key),
                     .create => try self.handle_create(key),
                     .find => try self.handle_find(key),
+                    .bookmark => try self.handle_bookmark(key),
                 }
             },
         }
@@ -213,6 +226,12 @@ pub const App = struct {
             .scroll = self.find_scroll,
         } else null;
 
+        const bookmark_state: ?render.BookmarkState = if (self.mode == .bookmark) .{
+            .bookmarks = self.bookmarks.items,
+            .cursor = self.bookmark_cursor,
+            .scroll = self.bookmark_scroll,
+        } else null;
+
         render.draw(
             frame_alloc,
             win,
@@ -231,6 +250,7 @@ pub const App = struct {
             self.clip_entries.items.len,
             self.create_buf.items,
             find_state,
+            bookmark_state,
         );
 
         if (self.mode != .edit and self.mode != .replace and self.mode != .create) {
@@ -300,6 +320,10 @@ pub const App = struct {
             try self.enter_find_mode();
         } else if (key.matches(vaxis.Key.f1, .{})) {
             self.mode = .help;
+        } else if (key.matches('m', .{})) {
+            self.toggle_bookmark();
+        } else if (key.matches('\'', .{})) {
+            self.enter_bookmark_mode();
         }
     }
 
@@ -1319,7 +1343,7 @@ pub const App = struct {
                 self.message = msg;
             } else {
                 // Text files: open in $EDITOR
-                const editor = std.posix.getenv("EDITOR") orelse "vi";
+                const editor = std.posix.getenv("VISUAL") orelse std.posix.getenv("EDITOR") orelse "xdg-open";
                 const editor_z = self.allocator.dupeZ(u8, editor) catch return;
                 defer self.allocator.free(editor_z);
 
@@ -1484,5 +1508,210 @@ pub const App = struct {
             self.cursor = count - 1;
         }
         self.adjust_scroll();
+    }
+
+    // ─── BOOKMARK MODE ───
+
+    fn get_bookmarks_path(buf: *[std.fs.max_path_bytes]u8) ?[]const u8 {
+        const home = std.posix.getenv("HOME") orelse return null;
+        return std.fmt.bufPrint(buf, "{s}/.config/xpl-f/bookmarks", .{home}) catch null;
+    }
+
+    fn load_bookmarks(self: *App) void {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const bk_path = get_bookmarks_path(&path_buf) orelse return;
+
+        const file = std.fs.openFileAbsolute(bk_path, .{}) catch return;
+        defer file.close();
+
+        const max_bytes: usize = 64 * 1024;
+        const buf = self.allocator.alloc(u8, max_bytes) catch return;
+        defer self.allocator.free(buf);
+
+        const n = file.readAll(buf) catch return;
+        if (n == 0) return;
+        const content = buf[0..n];
+
+        var start: usize = 0;
+        for (content, 0..) |c, i| {
+            if (c == '\n') {
+                const line = content[start..i];
+                if (line.len > 0) {
+                    const duped = self.allocator.dupe(u8, line) catch break;
+                    self.bookmarks.append(self.allocator, duped) catch {
+                        self.allocator.free(duped);
+                        break;
+                    };
+                }
+                start = i + 1;
+            }
+        }
+        // Last line without trailing newline
+        if (start < content.len) {
+            const line = content[start..];
+            if (line.len > 0) {
+                const duped = self.allocator.dupe(u8, line) catch return;
+                self.bookmarks.append(self.allocator, duped) catch {
+                    self.allocator.free(duped);
+                };
+            }
+        }
+    }
+
+    fn save_bookmarks(self: *App) void {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const bk_path = get_bookmarks_path(&path_buf) orelse return;
+
+        // Ensure parent directory exists
+        const dir_path = std.fs.path.dirname(bk_path) orelse return;
+        std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return,
+        };
+
+        const file = std.fs.createFileAbsolute(bk_path, .{ .truncate = true }) catch return;
+        defer file.close();
+
+        for (self.bookmarks.items) |path| {
+            _ = file.write(path) catch return;
+            _ = file.write("\n") catch return;
+        }
+    }
+
+    fn free_bookmarks(self: *App) void {
+        for (self.bookmarks.items) |path| {
+            self.allocator.free(path);
+        }
+        self.bookmarks.clearRetainingCapacity();
+    }
+
+    fn toggle_bookmark(self: *App) void {
+        const current_path = self.dir_state.path;
+
+        // Check if already bookmarked
+        for (self.bookmarks.items, 0..) |path, i| {
+            if (std.mem.eql(u8, path, current_path)) {
+                // Remove it
+                self.allocator.free(path);
+                _ = self.bookmarks.orderedRemove(i);
+                self.save_bookmarks();
+                const msg = std.fmt.bufPrint(&self.message_buf, "Bookmark removed", .{}) catch "Removed";
+                self.message = msg;
+                return;
+            }
+        }
+
+        // Add new bookmark
+        const duped = self.allocator.dupe(u8, current_path) catch return;
+        self.bookmarks.append(self.allocator, duped) catch {
+            self.allocator.free(duped);
+            return;
+        };
+        self.save_bookmarks();
+        const msg = std.fmt.bufPrint(&self.message_buf, "Bookmark added", .{}) catch "Added";
+        self.message = msg;
+    }
+
+    fn enter_bookmark_mode(self: *App) void {
+        if (self.bookmarks.items.len == 0) {
+            self.message = "No bookmarks (m to add)";
+            return;
+        }
+        self.bookmark_cursor = 0;
+        self.bookmark_scroll = 0;
+        self.mode = .bookmark;
+    }
+
+    fn handle_bookmark(self: *App, key: vaxis.Key) !void {
+        if (key.matches(vaxis.Key.escape, .{}) or key.matches('q', .{})) {
+            self.mode = .normal;
+            return;
+        }
+
+        if (key.matches(vaxis.Key.enter, .{})) {
+            try self.navigate_to_bookmark();
+            return;
+        }
+
+        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+            if (self.bookmarks.items.len > 0 and self.bookmark_cursor + 1 < self.bookmarks.items.len) {
+                self.bookmark_cursor += 1;
+                self.adjust_bookmark_scroll();
+            }
+            return;
+        }
+        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+            if (self.bookmark_cursor > 0) {
+                self.bookmark_cursor -= 1;
+                self.adjust_bookmark_scroll();
+            }
+            return;
+        }
+        if (key.matches('G', .{})) {
+            if (self.bookmarks.items.len > 0) {
+                self.bookmark_cursor = self.bookmarks.items.len - 1;
+                self.adjust_bookmark_scroll();
+            }
+            return;
+        }
+        if (key.matches('g', .{})) {
+            self.bookmark_cursor = 0;
+            self.bookmark_scroll = 0;
+            return;
+        }
+        if (key.matches('d', .{}) or key.matches('x', .{})) {
+            self.remove_bookmark();
+            return;
+        }
+    }
+
+    fn navigate_to_bookmark(self: *App) !void {
+        if (self.bookmarks.items.len == 0) {
+            self.mode = .normal;
+            return;
+        }
+
+        const path = self.bookmarks.items[self.bookmark_cursor];
+
+        // Check path exists
+        std.fs.accessAbsolute(path, .{}) catch {
+            const msg = std.fmt.bufPrint(&self.message_buf, "Path not found, removed", .{}) catch "Not found";
+            self.message = msg;
+            self.remove_bookmark();
+            self.mode = .normal;
+            return;
+        };
+
+        try self.dir_state.scan(path);
+        self.cursor = 0;
+        self.scroll_offset = 0;
+        self.mode = .normal;
+    }
+
+    fn remove_bookmark(self: *App) void {
+        if (self.bookmarks.items.len == 0) return;
+
+        self.allocator.free(self.bookmarks.items[self.bookmark_cursor]);
+        _ = self.bookmarks.orderedRemove(self.bookmark_cursor);
+        self.save_bookmarks();
+
+        if (self.bookmarks.items.len == 0) {
+            self.mode = .normal;
+            self.message = "Last bookmark removed";
+            return;
+        }
+        if (self.bookmark_cursor >= self.bookmarks.items.len) {
+            self.bookmark_cursor = self.bookmarks.items.len - 1;
+        }
+        self.adjust_bookmark_scroll();
+    }
+
+    fn adjust_bookmark_scroll(self: *App) void {
+        const visible: usize = 20;
+        if (self.bookmark_cursor < self.bookmark_scroll) {
+            self.bookmark_scroll = self.bookmark_cursor;
+        } else if (self.bookmark_cursor >= self.bookmark_scroll + visible) {
+            self.bookmark_scroll = self.bookmark_cursor - visible + 1;
+        }
     }
 };

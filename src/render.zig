@@ -22,6 +22,12 @@ pub const FindState = struct {
     scroll: usize,
 };
 
+pub const BookmarkState = struct {
+    bookmarks: []const []const u8,
+    cursor: usize,
+    scroll: usize,
+};
+
 pub const PreviewState = struct {
     lines: []const []const u8,
     scroll: usize,
@@ -54,6 +60,7 @@ pub fn draw(
     clip_count: usize,
     create_buf: []const u8,
     find_state: ?FindState,
+    bookmark_state: ?BookmarkState,
 ) void {
     const width = win.width;
     const height = win.height;
@@ -131,6 +138,13 @@ pub fn draw(
     if (current_mode == .find) {
         if (find_state) |fs| {
             draw_find(alloc, win, width, height, fs);
+        }
+    }
+
+    // Draw bookmark popup
+    if (current_mode == .bookmark) {
+        if (bookmark_state) |bs| {
+            draw_bookmarks(alloc, win, width, height, bs);
         }
     }
 }
@@ -402,6 +416,7 @@ fn draw_status(
         .preview => " PREVIEW ",
         .create => " CREATE ",
         .find => " FIND ",
+        .bookmark => " BOOKMARK ",
     };
     const mode_style = switch (current_mode) {
         .normal, .help => style.status_normal_style,
@@ -411,6 +426,7 @@ fn draw_status(
         .confirm => style.status_edit_style,
         .preview => style.status_normal_style,
         .create => style.status_search_style,
+        .bookmark => style.status_edit_style,
     };
 
     _ = win.printSegment(.{
@@ -627,6 +643,8 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "  p           Paste",
         "  C-l         Preview file",
         "  s           Open shell here",
+        "  m           Toggle bookmark",
+        "  '           Open bookmarks",
         "  C-p         Find file (ff)",
         "  C-f         Grep content (gg)",
         "  q           Quit",
@@ -874,6 +892,81 @@ fn draw_find(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usi
     const hint_row: u16 = @intCast(inner_h -| 1);
     _ = popup.printSegment(.{
         .text = "j/k=Navigate  Enter=Go  Esc=Cancel",
+        .style = style.dim_style,
+    }, .{ .row_offset = hint_row, .col_offset = 1 });
+}
+
+fn draw_bookmarks(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, bs: BookmarkState) void {
+    const popup_w: u16 = @intCast(@max(@min(total_w *| 3 / 5, total_w -| 4), 30));
+    const popup_h: u16 = @intCast(@max(@min(bs.bookmarks.len + 4, total_h -| 4), 6));
+    if (popup_w < 20 or popup_h < 4) return;
+
+    const x_off: i17 = @intCast((total_w - popup_w) / 2);
+    const y_off: i17 = @intCast((total_h - popup_h) / 2);
+
+    const popup = win.child(.{
+        .x_off = x_off,
+        .y_off = y_off,
+        .width = popup_w,
+        .height = popup_h,
+        .border = .{
+            .where = .all,
+            .glyphs = .single_rounded,
+            .style = style.confirm_border_style,
+        },
+    });
+
+    popup.clear();
+
+    const inner_w = if (popup.width > 0) popup.width else return;
+    const inner_h = if (popup.height > 0) popup.height else return;
+
+    // Title
+    const title_text = std.fmt.allocPrint(alloc, " Bookmarks ({d}) ", .{bs.bookmarks.len}) catch return;
+    _ = win.printSegment(.{
+        .text = title_text,
+        .style = style.confirm_border_style,
+    }, .{
+        .row_offset = @intCast(@as(u16, @intCast(@as(i17, y_off)))),
+        .col_offset = @intCast(@as(u16, @intCast(@as(i17, x_off) + 2))),
+    });
+
+    // List
+    const list_h = inner_h -| 1; // reserve last row for hints
+    var row: usize = 0;
+    var idx = bs.scroll;
+    while (row < list_h and idx < bs.bookmarks.len) : ({
+        row += 1;
+        idx += 1;
+    }) {
+        const path = bs.bookmarks[idx];
+        const display_row: u16 = @intCast(row);
+        const is_cursor = idx == bs.cursor;
+
+        if (is_cursor) {
+            for (0..inner_w) |x| {
+                popup.writeCell(@intCast(x), display_row, .{
+                    .char = .{ .grapheme = " ", .width = 1 },
+                    .style = .{ .reverse = true },
+                });
+            }
+        }
+
+        const indicator: []const u8 = if (is_cursor) " > " else "   ";
+        const max_path = inner_w -| 4;
+        const display_path = if (path.len > max_path) path[path.len - max_path ..] else path;
+        const line = std.fmt.allocPrint(alloc, "{s}{s}", .{ indicator, display_path }) catch continue;
+        const entry_style: vaxis.Style = if (is_cursor) .{ .reverse = true } else style.file_style;
+        _ = popup.printSegment(.{
+            .text = line,
+            .style = entry_style,
+        }, .{ .row_offset = display_row, .col_offset = 0 });
+    }
+
+    // Hints
+    const hint_row: u16 = @intCast(inner_h -| 1);
+    _ = popup.printSegment(.{
+        .text = "j/k=Navigate  Enter=Go  d=Remove  Esc=Close",
         .style = style.dim_style,
     }, .{ .row_offset = hint_row, .col_offset = 1 });
 }
