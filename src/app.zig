@@ -333,6 +333,8 @@ pub const App = struct {
                 if (key.matches('g', .{})) {
                     self.cursor = 0;
                     self.scroll_offset = 0;
+                } else if (key.matches('d', .{})) {
+                    self.open_ripdrag();
                 }
                 self.pending_key = .none;
             },
@@ -1370,6 +1372,58 @@ pub const App = struct {
         }
     }
 
+    fn open_ripdrag(self: *App) void {
+        // Collect paths: selected files or current entry
+        var paths: std.ArrayList([]const u8) = .{};
+        defer {
+            for (paths.items) |p| self.allocator.free(p);
+            paths.deinit(self.allocator);
+        }
+
+        const has_sel = self.dir_state.has_selection();
+        if (has_sel) {
+            for (self.dir_state.filtered_entries.items) |real_idx| {
+                const e = self.dir_state.all_entries.items[real_idx];
+                if (!e.selected) continue;
+                const full = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.dir_state.path, e.name }) catch continue;
+                paths.append(self.allocator, full) catch {
+                    self.allocator.free(full);
+                    continue;
+                };
+            }
+        } else {
+            const e = self.dir_state.get_entry(self.cursor) orelse return;
+            const full = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.dir_state.path, e.name }) catch return;
+            paths.append(self.allocator, full) catch {
+                self.allocator.free(full);
+                return;
+            };
+        }
+
+        if (paths.items.len == 0) return;
+
+        // Build argv: ripdrag [paths...]
+        var argv: std.ArrayList([]const u8) = .{};
+        defer argv.deinit(self.allocator);
+        argv.append(self.allocator, "ripdrag") catch return;
+        for (paths.items) |p| {
+            argv.append(self.allocator, p) catch continue;
+        }
+
+        var child = std.process.Child.init(argv.items, self.allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        _ = child.spawn() catch {
+            self.message = "Failed to launch ripdrag";
+            return;
+        };
+
+        const count = paths.items.len;
+        const msg = std.fmt.bufPrint(&self.message_buf, "ripdrag: {d} file(s)", .{count}) catch "ripdrag launched";
+        self.message = msg;
+    }
+
     fn go_parent(self: *App) !void {
         const path = self.dir_state.path;
         if (std.mem.eql(u8, path, "/")) return;
@@ -1586,11 +1640,20 @@ pub const App = struct {
     }
 
     fn toggle_bookmark(self: *App) void {
-        const current_path = self.dir_state.path;
+        // Bookmark the selected entry (if it's a directory) or current directory
+        const entry = self.dir_state.get_entry(self.cursor);
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const bookmark_path = if (entry != null and entry.?.kind == .dir) blk: {
+            const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ self.dir_state.path, entry.?.name }) catch {
+                break :blk self.dir_state.path;
+            };
+            break :blk std.fs.cwd().realpath(full, &real_buf) catch full;
+        } else self.dir_state.path;
 
         // Check if already bookmarked
         for (self.bookmarks.items, 0..) |path, i| {
-            if (std.mem.eql(u8, path, current_path)) {
+            if (std.mem.eql(u8, path, bookmark_path)) {
                 // Remove it
                 self.allocator.free(path);
                 _ = self.bookmarks.orderedRemove(i);
@@ -1602,7 +1665,7 @@ pub const App = struct {
         }
 
         // Add new bookmark
-        const duped = self.allocator.dupe(u8, current_path) catch return;
+        const duped = self.allocator.dupe(u8, bookmark_path) catch return;
         self.bookmarks.append(self.allocator, duped) catch {
             self.allocator.free(duped);
             return;

@@ -645,6 +645,7 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "  s           Open shell here",
         "  m           Toggle bookmark",
         "  '           Open bookmarks",
+        "  g d         Drag & drop (ripdrag)",
         "  C-p         Find file (ff)",
         "  C-f         Grep content (gg)",
         "  q           Quit",
