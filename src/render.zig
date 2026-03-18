@@ -38,7 +38,7 @@ pub const PreviewState = struct {
 };
 
 // Fixed column widths (right-aligned columns); Name takes the rest
-const SIZE_W: usize = 8; // "  1.2M  "
+const SIZE_W: usize = 10; // "  1.2M  "
 const PERM_W: usize = 15; // " 755 rwxr-xr-x "
 const DATE_W: usize = 18; // " 2026-03-18 14:30 "
 
