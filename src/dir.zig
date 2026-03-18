@@ -63,12 +63,14 @@ pub const DirState = struct {
             var size: u64 = 0;
             var modified: i128 = 0;
             var is_executable = false;
+            var mode: u32 = 0;
 
             const stat = dir.statFile(e.name) catch null;
             if (stat) |s| {
                 size = s.size;
                 modified = s.mtime;
                 is_executable = (s.mode & 0o111) != 0;
+                mode = @intCast(s.mode & 0o7777);
             }
 
             const kind: EntryKind = switch (e.kind) {
@@ -85,6 +87,7 @@ pub const DirState = struct {
                 .kind = kind,
                 .is_executable = is_executable,
                 .selected = false,
+                .mode = mode,
             });
         }
 

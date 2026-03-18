@@ -16,6 +16,7 @@ pub const FileEntry = struct {
     kind: EntryKind,
     is_executable: bool,
     selected: bool,
+    mode: u32,
 
     pub fn get_style(self: FileEntry) vaxis.Style {
         if (self.selected) {
@@ -52,6 +53,19 @@ pub const FileEntry = struct {
         } else {
             return std.fmt.bufPrint(buf, "{d:.1}G", .{size_f / (1024.0 * 1024.0 * 1024.0)}) catch "-";
         }
+    }
+
+    pub fn format_perms(self: FileEntry, buf: []u8) []const u8 {
+        const m = self.mode;
+        const octal = std.fmt.bufPrint(buf[0..3], "{o:0>3}", .{m & 0o777}) catch return "-";
+        _ = octal;
+        buf[3] = ' ';
+        const rwx = "rwxrwxrwx";
+        const bits = [9]u32{ 0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001 };
+        for (0..9) |i| {
+            buf[4 + i] = if (m & bits[i] != 0) rwx[i] else '-';
+        }
+        return buf[0..13];
     }
 
     pub fn format_date(self: FileEntry, buf: []u8) []const u8 {

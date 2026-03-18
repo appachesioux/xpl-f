@@ -37,10 +37,10 @@ pub const PreviewState = struct {
     total_lines: usize,
 };
 
-// Column widths as fractions of available width
-const NAME_RATIO = 0.55;
-const SIZE_RATIO = 0.15;
-// DATE takes the rest
+// Fixed column widths (right-aligned columns); Name takes the rest
+const SIZE_W: usize = 8; // "  1.2M  "
+const PERM_W: usize = 15; // " 755 rwxr-xr-x "
+const DATE_W: usize = 18; // " 2026-03-18 14:30 "
 
 pub fn draw(
     alloc: std.mem.Allocator,
@@ -93,17 +93,17 @@ pub fn draw(
     // Layout: row 0 = header, row 1 = separator, row 2+ = entries, last row = status
     const list_height = if (inner_h > 3) inner_h - 3 else return;
 
-    const name_w = calc_name_width(inner_w);
-    const size_w = calc_size_width(inner_w);
+    const right_cols = SIZE_W + PERM_W + DATE_W;
+    const name_w = if (inner_w > right_cols + 10) inner_w - right_cols else 10;
 
     // Draw header
-    draw_header(main, inner_w, name_w, size_w);
+    draw_header(main, inner_w, name_w);
 
     // Draw separator line below header
-    draw_header_separator(main, inner_w, name_w, size_w);
+    draw_header_separator(main, inner_w, name_w);
 
     // Draw entries
-    draw_entries(alloc, main, dir_state, cursor, scroll_offset, list_height, inner_w, name_w, size_w, current_mode, edit_cursor_col);
+    draw_entries(alloc, main, dir_state, cursor, scroll_offset, list_height, inner_w, name_w, current_mode, edit_cursor_col);
 
     // Draw status bar
     draw_status(alloc, main, inner_w, inner_h, current_mode, pending_key, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf);
@@ -181,7 +181,7 @@ fn draw_version(alloc: std.mem.Allocator, win: Window, width: usize) void {
     });
 }
 
-fn draw_header(win: Window, width: usize, name_w: usize, size_w: usize) void {
+fn draw_header(win: Window, width: usize, name_w: usize) void {
     // Fill header bg
     for (0..width) |x| {
         win.writeCell(@intCast(x), 0, .{
@@ -195,38 +195,31 @@ fn draw_header(win: Window, width: usize, name_w: usize, size_w: usize) void {
         .style = style.header_style,
     }, .{ .row_offset = 0, .col_offset = 0 });
 
-    // Vertical separator before Size
-    if (name_w > 0) {
-        win.writeCell(@intCast(name_w - 1), 0, .{
-            .char = .{ .grapheme = "│", .width = 1 },
-            .style = style.border_style,
-        });
+    const cols = [_]struct { off: usize, label: []const u8 }{
+        .{ .off = name_w, .label = " Size" },
+        .{ .off = name_w + SIZE_W, .label = " Perms" },
+        .{ .off = name_w + SIZE_W + PERM_W, .label = " Modified" },
+    };
+
+    for (cols) |col| {
+        if (col.off > 0 and col.off <= width) {
+            win.writeCell(@intCast(col.off - 1), 0, .{
+                .char = .{ .grapheme = "│", .width = 1 },
+                .style = style.border_style,
+            });
+        }
+        _ = win.printSegment(.{
+            .text = col.label,
+            .style = style.header_style,
+        }, .{ .row_offset = 0, .col_offset = @intCast(col.off) });
     }
-
-    _ = win.printSegment(.{
-        .text = " Size",
-        .style = style.header_style,
-    }, .{ .row_offset = 0, .col_offset = @intCast(name_w) });
-
-    // Vertical separator before Modified
-    const date_col = name_w + size_w;
-    if (date_col > 0) {
-        win.writeCell(@intCast(date_col - 1), 0, .{
-            .char = .{ .grapheme = "│", .width = 1 },
-            .style = style.border_style,
-        });
-    }
-
-    _ = win.printSegment(.{
-        .text = " Modified",
-        .style = style.header_style,
-    }, .{ .row_offset = 0, .col_offset = @intCast(date_col) });
 }
 
-fn draw_header_separator(win: Window, width: usize, name_w: usize, size_w: usize) void {
+fn draw_header_separator(win: Window, width: usize, name_w: usize) void {
     for (0..width) |x| {
-        const glyph: []const u8 = if (x == name_w - 1 or x == name_w + size_w - 1) "┼" else "─";
-        const s = if (x == name_w - 1 or x == name_w + size_w - 1) style.border_style else style.dim_style;
+        const is_cross = x == name_w - 1 or x == name_w + SIZE_W - 1 or x == name_w + SIZE_W + PERM_W - 1;
+        const glyph: []const u8 = if (is_cross) "┼" else "─";
+        const s = if (is_cross) style.border_style else style.dim_style;
         win.writeCell(@intCast(x), 1, .{
             .char = .{ .grapheme = glyph, .width = 1 },
             .style = s,
@@ -243,7 +236,6 @@ fn draw_entries(
     list_height: usize,
     width: usize,
     name_w: usize,
-    size_w: usize,
     current_mode: mode_mod.Mode,
     edit_cursor_col: usize,
 ) void {
@@ -326,36 +318,48 @@ fn draw_entries(
             });
         }
 
-        // --- Size column (uses child window to clip) ---
+        // --- Right-aligned fixed columns: Size, Perms, Date ---
+        const size_start = name_w;
+        const perm_start = name_w + SIZE_W;
+        const date_start = name_w + SIZE_W + PERM_W;
+
+        // Size column
         const size_col = win.child(.{
-            .x_off = @intCast(name_w),
+            .x_off = @intCast(size_start),
             .y_off = @intCast(display_row),
-            .width = @intCast(size_w),
+            .width = SIZE_W,
             .height = 1,
         });
         const size_buf = alloc.alloc(u8, 32) catch return;
         const size_str = e.format_size(size_buf);
-        _ = size_col.printSegment(.{
-            .text = " ",
-            // .style = if (is_cursor) entry_style else style.dim_style,
-            .style = entry_style,
-        }, .{});
-        _ = size_col.printSegment(.{
-            .text = size_str,
-            // .style = if (is_cursor) entry_style else style.dim_style,
-            .style = entry_style,
-        }, .{ .col_offset = 1 });
+        _ = size_col.printSegment(.{ .text = " ", .style = entry_style }, .{});
+        _ = size_col.printSegment(.{ .text = size_str, .style = entry_style }, .{ .col_offset = 1 });
 
-        // Vertical separator before Date
-        const date_start = name_w + size_w;
-        if (date_start > 0) {
-            win.writeCell(@intCast(date_start - 1), display_row, .{
-                .char = .{ .grapheme = "│", .width = 1 },
-                .style = style.border_style,
-            });
-        }
+        // Separator before Perms
+        win.writeCell(@intCast(perm_start - 1), display_row, .{
+            .char = .{ .grapheme = "│", .width = 1 },
+            .style = style.border_style,
+        });
 
-        // --- Date column (uses child window to clip) ---
+        // Perms column
+        const perm_col = win.child(.{
+            .x_off = @intCast(perm_start),
+            .y_off = @intCast(display_row),
+            .width = PERM_W,
+            .height = 1,
+        });
+        const perm_buf = alloc.alloc(u8, 32) catch return;
+        const perm_str = e.format_perms(perm_buf);
+        _ = perm_col.printSegment(.{ .text = " ", .style = entry_style }, .{});
+        _ = perm_col.printSegment(.{ .text = perm_str, .style = entry_style }, .{ .col_offset = 1 });
+
+        // Separator before Date
+        win.writeCell(@intCast(date_start - 1), display_row, .{
+            .char = .{ .grapheme = "│", .width = 1 },
+            .style = style.border_style,
+        });
+
+        // Date column
         const date_w = if (width > date_start) width - date_start else 0;
         if (date_w > 0) {
             const date_col = win.child(.{
@@ -366,16 +370,8 @@ fn draw_entries(
             });
             const date_buf = alloc.alloc(u8, 32) catch return;
             const date_str = e.format_date(date_buf);
-            _ = date_col.printSegment(.{
-                .text = " ",
-                // .style = if (is_cursor) entry_style else style.dim_style,
-                .style = entry_style,
-            }, .{});
-            _ = date_col.printSegment(.{
-                .text = date_str,
-                // .style = if (is_cursor) entry_style else style.dim_style,
-                .style = entry_style,
-            }, .{ .col_offset = 1 });
+            _ = date_col.printSegment(.{ .text = " ", .style = entry_style }, .{});
+            _ = date_col.printSegment(.{ .text = date_str, .style = entry_style }, .{ .col_offset = 1 });
         }
     }
 }
@@ -1001,14 +997,3 @@ fn tab_expand(alloc: std.mem.Allocator, line: []const u8, max_w: usize) ![]const
     return buf.items;
 }
 
-// --- Layout math ---
-
-fn calc_name_width(total: usize) usize {
-    const w: usize = @intFromFloat(@as(f64, @floatFromInt(total)) * NAME_RATIO);
-    return @max(w, 10);
-}
-
-fn calc_size_width(total: usize) usize {
-    const w: usize = @intFromFloat(@as(f64, @floatFromInt(total)) * SIZE_RATIO);
-    return @max(w, 6);
-}
