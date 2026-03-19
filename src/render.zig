@@ -637,6 +637,7 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "  D           Delete",
         "  n           New file/dir",
         "  p           Paste",
+        "  t           Duplicate file",
         "  C-l         Preview file",
         "  s           Open shell here",
         "  m           Toggle bookmark",

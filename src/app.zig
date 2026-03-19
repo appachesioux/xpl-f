@@ -324,6 +324,8 @@ pub const App = struct {
             self.toggle_bookmark();
         } else if (key.matches('\'', .{})) {
             self.enter_bookmark_mode();
+        } else if (key.matches('t', .{})) {
+            try self.duplicate_entry();
         }
     }
 
@@ -1139,8 +1141,15 @@ pub const App = struct {
 
         for (self.clip_entries.items) |src_path| {
             const basename = std.fs.path.basename(src_path);
+            const src_stat = std.fs.cwd().statFile(src_path) catch {
+                skipped += 1;
+                continue;
+            };
             var dst_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const dst_path = std.fmt.bufPrint(&dst_buf, "{s}/{s}", .{ self.dir_state.path, basename }) catch continue;
+            const dst_path = resolve_available_path(self.dir_state.path, basename, src_stat.kind == .directory, &dst_buf) orelse {
+                skipped += 1;
+                continue;
+            };
 
             // Check if source and destination are the same
             if (std.mem.eql(u8, src_path, dst_path)) {
@@ -1258,6 +1267,62 @@ pub const App = struct {
             self.allocator.free(line);
         }
         self.preview_lines.clearRetainingCapacity();
+    }
+
+    fn duplicate_entry(self: *App) !void {
+        const entry = self.dir_state.get_entry(self.cursor) orelse return;
+
+        var src_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const src_path = std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ self.dir_state.path, entry.name }) catch return;
+
+        var dst_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const dst_path = resolve_available_path(self.dir_state.path, entry.name, entry.kind == .dir, &dst_buf) orelse return;
+
+        self.copy_path(src_path, dst_path) catch {
+            self.message = "Failed to duplicate";
+            return;
+        };
+
+        const path_copy = try self.allocator.dupe(u8, self.dir_state.path);
+        defer self.allocator.free(path_copy);
+        try self.dir_state.scan(path_copy);
+        self.clamp_cursor();
+
+        const msg = std.fmt.bufPrint(&self.message_buf, "Duplicated as {s}", .{std.fs.path.basename(dst_path)}) catch "Duplicated";
+        self.message = msg;
+    }
+
+    /// Given a directory and a filename, returns a path with suffix -1, -2, ...
+    /// if the original already exists. Returns null if no available name found.
+    fn resolve_available_path(dir: []const u8, name: []const u8, is_dir: bool, buf: *[std.fs.max_path_bytes]u8) ?[]const u8 {
+        // Try original path first
+        const original = std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, name }) catch return null;
+        std.fs.accessAbsolute(original, .{}) catch |err| switch (err) {
+            error.FileNotFound => return original,
+            else => return null,
+        };
+
+        // Split name into stem and extension
+        var stem: []const u8 = name;
+        var ext: []const u8 = "";
+        if (!is_dir) {
+            if (std.mem.lastIndexOfScalar(u8, name, '.')) |dot| {
+                if (dot > 0) {
+                    stem = name[0..dot];
+                    ext = name[dot..];
+                }
+            }
+        }
+
+        // Find available suffix -1, -2, ...
+        var suffix: usize = 1;
+        return while (suffix < 100) : (suffix += 1) {
+            const candidate = std.fmt.bufPrint(buf, "{s}/{s}-{d}{s}", .{ dir, stem, suffix, ext }) catch return null;
+            std.fs.accessAbsolute(candidate, .{}) catch |err| switch (err) {
+                error.FileNotFound => break candidate,
+                else => return null,
+            };
+        } else null;
     }
 
     // ─── ACTIONS ───

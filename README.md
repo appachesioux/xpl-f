@@ -67,6 +67,7 @@ src/
 - `dd`: cortar para clipboard
 - `D`: deletar arquivo/seleção
 - `p`: colar (paste)
+- `t`: duplicar arquivo no local (sufixo -1, -2, ...)
 - `Ctrl+l`: preview flutuante
 - `.`: toggle hidden files
 - `Space`: selecionar
