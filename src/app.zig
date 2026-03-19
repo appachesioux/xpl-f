@@ -312,10 +312,10 @@ pub const App = struct {
             self.open_preview();
         } else if (key.matches('s', .{})) {
             self.open_shell();
-        } else if (key.matches('p', .{ .ctrl = true })) {
-            self.run_external("ff");
-        } else if (key.matches('f', .{ .ctrl = true })) {
-            self.run_external("gg");
+        // } else if (key.matches('p', .{ .ctrl = true })) {
+        //     self.run_external("ff");
+        // } else if (key.matches('f', .{ .ctrl = true })) {
+        //     self.run_external("gg");
         } else if (key.matches('?', .{})) {
             try self.enter_find_mode();
         } else if (key.matches(vaxis.Key.f1, .{})) {
@@ -1353,29 +1353,6 @@ pub const App = struct {
         self.vx.queueRefresh();
     }
 
-    fn run_external(self: *App, cmd: []const u8) void {
-        const cmd_z = self.allocator.dupeZ(u8, cmd) catch return;
-        defer self.allocator.free(cmd_z);
-
-        self.loop.stop();
-        self.vx.exitAltScreen(self.tty.writer()) catch {};
-        self.tty.deinit();
-        _ = std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25h") catch {};
-
-        var child = std.process.Child.init(&.{cmd_z}, self.allocator);
-        child.stdin_behavior = .Inherit;
-        child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
-        _ = child.spawnAndWait() catch {
-            // command not found — will restore screen below
-        };
-
-        self.tty = Tty.init(&self.tty_buf) catch return;
-        self.vx.enterAltScreen(self.tty.writer()) catch {};
-        self.loop.start() catch return;
-        self.vx.queueRefresh();
-    }
-
     fn enter_or_open(self: *App) !void {
         const entry = self.dir_state.get_entry(self.cursor) orelse return;
 
@@ -1842,4 +1819,28 @@ pub const App = struct {
             self.bookmark_scroll = self.bookmark_cursor - visible + 1;
         }
     }
+
+    fn run_external(self: *App, cmd: []const u8) void {
+        const cmd_z = self.allocator.dupeZ(u8, cmd) catch return;
+        defer self.allocator.free(cmd_z);
+
+        self.loop.stop();
+        self.vx.exitAltScreen(self.tty.writer()) catch {};
+        self.tty.deinit();
+        _ = std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25h") catch {};
+
+        var child = std.process.Child.init(&.{cmd_z}, self.allocator);
+        child.stdin_behavior = .Inherit;
+        child.stdout_behavior = .Inherit;
+        child.stderr_behavior = .Inherit;
+        _ = child.spawnAndWait() catch {
+            // command not found — will restore screen below
+        };
+
+        self.tty = Tty.init(&self.tty_buf) catch return;
+        self.vx.enterAltScreen(self.tty.writer()) catch {};
+        self.loop.start() catch return;
+        self.vx.queueRefresh();
+    }
+
 };
