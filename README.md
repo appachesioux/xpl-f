@@ -4,6 +4,8 @@ File explorer TUI, built as a study project for learning Zig.
 
 Written with assistance from Claude Code
 
+![xpl-f screenshot](xpl-f-tela.png)
+
 ## Stack
 
 - **Zig 0.15** com **libvaxis** (terminal rendering)
