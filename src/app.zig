@@ -25,7 +25,6 @@ pub const App = struct {
     scroll_offset: usize,
 
     mode: mode_mod.Mode,
-    pending_key: mode_mod.PendingKey,
 
     edit_cursor_col: usize,
 
@@ -70,6 +69,12 @@ pub const App = struct {
     bookmark_cursor: usize,
     bookmark_scroll: usize,
 
+    // Tree view
+    show_tree: bool,
+    tree_lines: std.ArrayList([]const u8),
+    tree_scroll: usize,
+    tree_total_lines: usize,
+
     should_quit: bool,
 
     pub fn init(allocator: std.mem.Allocator, initial_dir: ?[]const u8) !*App {
@@ -86,7 +91,6 @@ pub const App = struct {
             .cursor = 0,
             .scroll_offset = 0,
             .mode = .normal,
-            .pending_key = .none,
             .edit_cursor_col = 0,
             .search_buf = .{},
             .replace_find_buf = .{},
@@ -115,6 +119,10 @@ pub const App = struct {
             .bookmarks = .{},
             .bookmark_cursor = 0,
             .bookmark_scroll = 0,
+            .show_tree = false,
+            .tree_lines = .{},
+            .tree_scroll = 0,
+            .tree_total_lines = 0,
             .should_quit = false,
         };
 
@@ -148,6 +156,8 @@ pub const App = struct {
         if (self.confirm_ops) |*ops| ops.deinit(self.allocator);
         self.free_preview_lines();
         self.preview_lines.deinit(self.allocator);
+        self.free_tree_lines();
+        self.tree_lines.deinit(self.allocator);
         self.free_clipboard();
         self.find_buf.deinit(self.allocator);
         self.find_all_paths.deinit(self.allocator);
@@ -232,6 +242,12 @@ pub const App = struct {
             .scroll = self.bookmark_scroll,
         } else null;
 
+        const tree_view_state: ?render.TreeViewState = if (self.show_tree) .{
+            .lines = self.tree_lines.items,
+            .scroll = self.tree_scroll,
+            .total_lines = self.tree_total_lines,
+        } else null;
+
         render.draw(
             frame_alloc,
             win,
@@ -239,7 +255,6 @@ pub const App = struct {
             self.cursor,
             self.scroll_offset,
             self.mode,
-            self.pending_key,
             self.search_buf.items,
             self.message,
             ops_slice,
@@ -251,6 +266,7 @@ pub const App = struct {
             self.create_buf.items,
             find_state,
             bookmark_state,
+            tree_view_state,
         );
 
         if (self.mode != .edit and self.mode != .replace and self.mode != .create) {
@@ -263,63 +279,83 @@ pub const App = struct {
     fn handle_normal(self: *App, key: vaxis.Key) !void {
         const count = self.dir_state.entry_count();
 
-        if (self.pending_key != .none) {
-            try self.handle_pending(key);
+        // Tree view scroll handling
+        if (self.show_tree) {
+            if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+                if (self.tree_scroll + 1 < self.tree_total_lines) {
+                    self.tree_scroll += 1;
+                }
+            } else if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+                if (self.tree_scroll > 0) {
+                    self.tree_scroll -= 1;
+                }
+            } else if (key.matches(vaxis.Key.end, .{})) {
+                if (self.tree_total_lines > 0) {
+                    self.tree_scroll = self.tree_total_lines -| 1;
+                }
+            } else if (key.matches(vaxis.Key.home, .{})) {
+                self.tree_scroll = 0;
+            } else if (key.matches(vaxis.Key.f9, .{}) or key.matches('q', .{}) or key.matches(vaxis.Key.escape, .{})) {
+                self.show_tree = false;
+            }
             return;
         }
 
-        if (key.matches('q', .{})) {
-            self.should_quit = true;
-        } else if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+        // Navigation
+        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
             self.move_cursor_down(count);
         } else if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
             self.move_cursor_up();
-        } else if (key.matches('l', .{}) or key.matches(vaxis.Key.enter, .{})) {
+        } else if (key.matches(vaxis.Key.enter, .{})) {
             try self.enter_or_open();
-        } else if (key.matches('h', .{}) or key.matches('-', .{})) {
+        } else if (key.matches('-', .{}) or key.matches(vaxis.Key.backspace, .{})) {
             try self.go_parent();
-        } else if (key.matches('G', .{})) {
+        } else if (key.matches(vaxis.Key.home, .{})) {
+            self.cursor = 0;
+            self.scroll_offset = 0;
+        } else if (key.matches(vaxis.Key.end, .{})) {
             if (count > 0) {
                 self.cursor = count - 1;
                 self.adjust_scroll();
             }
-        } else if (key.matches('g', .{})) {
-            self.pending_key = .g;
-        } else if (key.matches('d', .{})) {
-            self.pending_key = .d;
-        } else if (key.matches('y', .{})) {
-            self.pending_key = .y;
-        } else if (key.matches('/', .{})) {
+        }
+        // Search & filter
+        else if (key.matches('/', .{})) {
             self.mode = .search;
             self.search_buf.clearRetainingCapacity();
-        } else if (key.matches('r', .{})) {
-            try self.enter_replace_mode();
-        } else if (key.matches('i', .{})) {
-            try self.enter_edit_mode();
-        } else if (key.matches('n', .{})) {
-            self.mode = .create;
-            self.create_buf.clearRetainingCapacity();
-        } else if (key.matches('.', .{})) {
-            try self.dir_state.toggle_hidden();
-            self.clamp_cursor();
-        } else if (key.matches(' ', .{})) {
-            self.toggle_selection();
-        } else if (key.matches('D', .{})) {
-            try self.delete_selected();
-        } else if (key.matches('p', .{})) {
-            try self.paste();
-        } else if (key.matches('l', .{ .ctrl = true })) {
-            self.open_preview();
-        } else if (key.matches('s', .{})) {
-            self.open_shell();
-        // } else if (key.matches('p', .{ .ctrl = true })) {
-        //     self.run_external("ff");
-        // } else if (key.matches('f', .{ .ctrl = true })) {
-        //     self.run_external("gg");
         } else if (key.matches('?', .{})) {
             try self.enter_find_mode();
-        } else if (key.matches(vaxis.Key.f1, .{})) {
+        }
+        // Selection & clipboard
+        else if (key.matches(' ', .{})) {
+            self.toggle_selection();
+        } else if (key.matches('c', .{})) {
+            self.clip_to_clipboard(.copy);
+        } else if (key.matches('x', .{})) {
+            self.clip_to_clipboard(.cut);
+        } else if (key.matches('Y', .{})) {
+            self.copy_location();
+        } else if (key.matches('p', .{})) {
+            try self.paste();
+        }
+        // File operations
+        else if (key.matches('.', .{})) {
+            try self.dir_state.toggle_hidden();
+            self.clamp_cursor();
+        } else if (key.matches('t', .{})) {
+            try self.duplicate_entry();
+        } else if (key.matches('m', .{})) {
+            self.toggle_bookmark();
+        }
+        // Function keys
+        else if (key.matches(vaxis.Key.f1, .{})) {
             self.mode = .help;
+        } else if (key.matches(vaxis.Key.f2, .{})) {
+            try self.enter_edit_mode();
+        } else if (key.matches(vaxis.Key.f3, .{})) {
+            self.open_preview();
+        } else if (key.matches(vaxis.Key.f4, .{})) {
+            self.open_shell();
         } else if (key.matches(vaxis.Key.f5, .{})) {
             try self.dir_state.scan(self.dir_state.path);
             if (self.cursor >= self.dir_state.filtered_entries.items.len) {
@@ -328,41 +364,25 @@ pub const App = struct {
                 else
                     0;
             }
-        } else if (key.matches('m', .{})) {
-            self.toggle_bookmark();
-        } else if (key.matches('\'', .{})) {
+        } else if (key.matches(vaxis.Key.f6, .{})) {
+            try self.enter_replace_mode();
+        } else if (key.matches(vaxis.Key.f7, .{})) {
+            self.mode = .create;
+            self.create_buf.clearRetainingCapacity();
+        } else if (key.matches(vaxis.Key.f8, .{})) {
+            try self.delete_selected();
+        } else if (key.matches(vaxis.Key.f9, .{})) {
+            self.toggle_tree_view();
+        } else if (key.matches(vaxis.Key.f10, .{})) {
             self.enter_bookmark_mode();
-        } else if (key.matches('t', .{})) {
-            try self.duplicate_entry();
         }
-    }
-
-    fn handle_pending(self: *App, key: vaxis.Key) !void {
-        switch (self.pending_key) {
-            .g => {
-                if (key.matches('g', .{})) {
-                    self.cursor = 0;
-                    self.scroll_offset = 0;
-                } else if (key.matches('d', .{})) {
-                    self.open_ripdrag();
-                }
-                self.pending_key = .none;
-            },
-            .d => {
-                if (key.matches('d', .{})) {
-                    self.clip_to_clipboard(.cut);
-                }
-                self.pending_key = .none;
-            },
-            .y => {
-                if (key.matches('y', .{})) {
-                    self.clip_to_clipboard(.copy);
-                } else if (key.matches('l', .{})) {
-                    self.copy_location();
-                }
-                self.pending_key = .none;
-            },
-            .none => {},
+        // Drag & drop
+        else if (key.matches('d', .{ .ctrl = true })) {
+            self.open_ripdrag();
+        }
+        // Quit
+        else if (key.matches('q', .{})) {
+            self.should_quit = true;
         }
     }
 
@@ -984,15 +1004,21 @@ pub const App = struct {
         const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ self.dir_state.path, name }) catch return;
 
         var count: usize = 0;
-        self.tree_recurse(full_path, "", &count, 0);
+        self.tree_recurse_into(&self.preview_lines, full_path, "", &count, 0, 200, 3);
         self.preview_total_lines = count;
     }
 
-    const max_tree_lines = 200;
-    const max_tree_depth = 3;
-
-    fn tree_recurse(self: *App, path: []const u8, prefix: []const u8, count: *usize, depth: usize) void {
-        if (count.* >= max_tree_lines or depth > max_tree_depth) return;
+    fn tree_recurse_into(
+        self: *App,
+        target: *std.ArrayList([]const u8),
+        path: []const u8,
+        prefix: []const u8,
+        count: *usize,
+        depth: usize,
+        max_lines: usize,
+        max_depth: usize,
+    ) void {
+        if (count.* >= max_lines or depth > max_depth) return;
 
         var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch return;
         defer dir.close();
@@ -1023,7 +1049,7 @@ pub const App = struct {
         defer for (entries.items) |e| self.allocator.free(e.name);
 
         for (entries.items, 0..) |entry, i| {
-            if (count.* >= max_tree_lines) break;
+            if (count.* >= max_lines) break;
             const is_last = (i == entries.items.len - 1);
             const connector: []const u8 = if (is_last) "└── " else "├── ";
             const icon: []const u8 = switch (entry.kind) {
@@ -1033,13 +1059,13 @@ pub const App = struct {
             };
 
             const line = std.fmt.allocPrint(self.allocator, "{s}{s}{s}{s}", .{ prefix, connector, icon, entry.name }) catch continue;
-            self.preview_lines.append(self.allocator, line) catch {
+            target.append(self.allocator, line) catch {
                 self.allocator.free(line);
                 break;
             };
             count.* += 1;
 
-            if (entry.kind == .directory and depth < max_tree_depth) {
+            if (entry.kind == .directory and depth < max_depth) {
                 var sub_buf: [std.fs.max_path_bytes]u8 = undefined;
                 const sub_path = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ path, entry.name }) catch continue;
                 const child_prefix = if (is_last)
@@ -1047,9 +1073,44 @@ pub const App = struct {
                 else
                     std.fmt.allocPrint(self.allocator, "{s}│   ", .{prefix}) catch continue;
                 defer self.allocator.free(child_prefix);
-                self.tree_recurse(sub_path, child_prefix, count, depth + 1);
+                self.tree_recurse_into(target, sub_path, child_prefix, count, depth + 1, max_lines, max_depth);
             }
         }
+    }
+
+    // ─── TREE VIEW ───
+
+    fn free_tree_lines(self: *App) void {
+        for (self.tree_lines.items) |line| {
+            self.allocator.free(line);
+        }
+        self.tree_lines.clearRetainingCapacity();
+    }
+
+    fn toggle_tree_view(self: *App) void {
+        if (self.show_tree) {
+            self.show_tree = false;
+            self.free_tree_lines();
+            return;
+        }
+        self.load_tree();
+        self.show_tree = true;
+    }
+
+    fn load_tree(self: *App) void {
+        self.free_tree_lines();
+        self.tree_scroll = 0;
+
+        // Add root directory header
+        const root_line = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ style.icon_dir, self.dir_state.path }) catch return;
+        self.tree_lines.append(self.allocator, root_line) catch {
+            self.allocator.free(root_line);
+            return;
+        };
+
+        var count: usize = 0;
+        self.tree_recurse_into(&self.tree_lines, self.dir_state.path, "", &count, 0, 500, 5);
+        self.tree_total_lines = self.tree_lines.items.len;
     }
 
     // ─── CLIPBOARD ───
@@ -1374,6 +1435,10 @@ pub const App = struct {
             try self.dir_state.scan(resolved);
             self.cursor = 0;
             self.scroll_offset = 0;
+            if (self.show_tree) {
+                self.show_tree = false;
+                self.free_tree_lines();
+            }
         } else {
             var full_path_buf: [std.fs.max_path_bytes]u8 = undefined;
             const full_path = std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ self.dir_state.path, entry.name }) catch return;
@@ -1495,6 +1560,10 @@ pub const App = struct {
         try self.dir_state.scan(parent);
         self.cursor = 0;
         self.scroll_offset = 0;
+        if (self.show_tree) {
+            self.show_tree = false;
+            self.free_tree_lines();
+        }
 
         if (old_name_len > 0) {
             for (0..self.dir_state.entry_count()) |i| {

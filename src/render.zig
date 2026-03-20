@@ -37,6 +37,12 @@ pub const PreviewState = struct {
     total_lines: usize,
 };
 
+pub const TreeViewState = struct {
+    lines: []const []const u8,
+    scroll: usize,
+    total_lines: usize,
+};
+
 // Fixed column widths (right-aligned columns); Name takes the rest
 const SIZE_W: usize = 10; // "  1.2M  "
 const PERM_W: usize = 15; // " 755 rwxr-xr-x "
@@ -49,7 +55,6 @@ pub fn draw(
     cursor: usize,
     scroll_offset: usize,
     current_mode: mode_mod.Mode,
-    pending_key: mode_mod.PendingKey,
     search_query: []const u8,
     message: ?[]const u8,
     confirm_ops: ?[]const dir_mod.DirState.EditOp,
@@ -61,6 +66,7 @@ pub fn draw(
     create_buf: []const u8,
     find_state: ?FindState,
     bookmark_state: ?BookmarkState,
+    tree_view_state: ?TreeViewState,
 ) void {
     const width = win.width;
     const height = win.height;
@@ -96,17 +102,22 @@ pub fn draw(
     const right_cols = SIZE_W + PERM_W + DATE_W;
     const name_w = if (inner_w > right_cols + 10) inner_w - right_cols else 10;
 
-    // Draw header
-    draw_header(main, inner_w, name_w);
+    if (tree_view_state) |tvs| {
+        // Tree view mode: render tree lines instead of normal list
+        draw_tree_view(alloc, main, inner_w, inner_h, tvs);
+    } else {
+        // Draw header
+        draw_header(main, inner_w, name_w);
 
-    // Draw separator line below header
-    draw_header_separator(main, inner_w, name_w);
+        // Draw separator line below header
+        draw_header_separator(main, inner_w, name_w);
 
-    // Draw entries
-    draw_entries(alloc, main, dir_state, cursor, scroll_offset, list_height, inner_w, name_w, current_mode, edit_cursor_col);
+        // Draw entries
+        draw_entries(alloc, main, dir_state, cursor, scroll_offset, list_height, inner_w, name_w, current_mode, edit_cursor_col);
+    }
 
     // Draw status bar
-    draw_status(alloc, main, inner_w, inner_h, current_mode, pending_key, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf);
+    draw_status(alloc, main, inner_w, inner_h, current_mode, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf, tree_view_state);
 
     // Draw confirm popup if in confirm mode
     if (current_mode == .confirm) {
@@ -224,6 +235,61 @@ fn draw_header_separator(win: Window, width: usize, name_w: usize) void {
             .char = .{ .grapheme = glyph, .width = 1 },
             .style = s,
         });
+    }
+}
+
+fn draw_tree_view(alloc: std.mem.Allocator, win: Window, width: usize, height: usize, tvs: TreeViewState) void {
+    // Use full interior height minus status bar
+    const content_h = if (height > 2) height - 2 else return;
+
+    // Header row
+    for (0..width) |x| {
+        win.writeCell(@intCast(x), 0, .{
+            .char = .{ .grapheme = " ", .width = 1 },
+            .style = style.header_style,
+        });
+    }
+    _ = win.printSegment(.{
+        .text = "  Tree View",
+        .style = style.header_style,
+    }, .{ .row_offset = 0, .col_offset = 0 });
+
+    // Scroll percentage on the right
+    if (tvs.total_lines > 0) {
+        const pct = if (tvs.total_lines <= 1) 100 else (tvs.scroll * 100) / (tvs.total_lines -| 1);
+        const pos_str = std.fmt.allocPrint(alloc, " {d}% ", .{pct}) catch "";
+        if (pos_str.len < width) {
+            _ = win.printSegment(.{
+                .text = pos_str,
+                .style = style.header_style,
+            }, .{ .row_offset = 0, .col_offset = @intCast(width -| pos_str.len) });
+        }
+    }
+
+    // Separator
+    for (0..width) |x| {
+        win.writeCell(@intCast(x), 1, .{
+            .char = .{ .grapheme = "─", .width = 1 },
+            .style = style.dim_style,
+        });
+    }
+
+    // Tree lines
+    var row: usize = 0;
+    var idx = tvs.scroll;
+    while (row < content_h and idx < tvs.lines.len) : ({
+        row += 1;
+        idx += 1;
+    }) {
+        const display_row: u16 = @intCast(row + 2);
+        const line = tvs.lines[idx];
+
+        const display_style = style.file_style;
+
+        _ = win.printSegment(.{
+            .text = std.fmt.allocPrint(alloc, "  {s}", .{line}) catch line,
+            .style = display_style,
+        }, .{ .row_offset = display_row, .col_offset = 0 });
     }
 }
 
@@ -382,7 +448,6 @@ fn draw_status(
     width: usize,
     height: usize,
     current_mode: mode_mod.Mode,
-    pending_key: mode_mod.PendingKey,
     cursor: usize,
     dir_state: *const dir_mod.DirState,
     search_query: []const u8,
@@ -390,6 +455,7 @@ fn draw_status(
     clip_op: mode_mod.ClipOp,
     clip_count: usize,
     create_buf: []const u8,
+    tree_view_state: ?TreeViewState,
 ) void {
     const status_row: u16 = @intCast(height -| 1);
 
@@ -402,7 +468,7 @@ fn draw_status(
     }
 
     // Mode label
-    const mode_label = switch (current_mode) {
+    const mode_label: []const u8 = if (tree_view_state != null) " TREE " else switch (current_mode) {
         .normal => " NORMAL ",
         .edit => " EDIT ",
         .search => " SEARCH ",
@@ -430,27 +496,18 @@ fn draw_status(
         .style = mode_style,
     }, .{ .row_offset = status_row, .col_offset = 0 });
 
-    var offset: u16 = @intCast(mode_label.len + 1);
-
-    // Pending key indicator
-    if (pending_key != .none) {
-        const pending_str = switch (pending_key) {
-            .g => "g",
-            .d => "d",
-            .y => "y",
-            .none => "",
-        };
-        _ = win.printSegment(.{
-            .text = pending_str,
-            .style = style.status_info_style,
-        }, .{ .row_offset = status_row, .col_offset = offset });
-        offset += 2;
-    }
+    const offset: u16 = @intCast(mode_label.len + 1);
 
     // Position and filename
     const count = dir_state.entry_count();
 
-    if (current_mode == .search) {
+    if (tree_view_state) |tvs| {
+        const info = std.fmt.allocPrint(alloc, "{d} entries", .{tvs.total_lines}) catch return;
+        _ = win.printSegment(.{
+            .text = info,
+            .style = style.status_info_style,
+        }, .{ .row_offset = status_row, .col_offset = offset });
+    } else if (current_mode == .search) {
         const info = std.fmt.allocPrint(alloc, "/{s}", .{search_query}) catch return;
         _ = win.printSegment(.{
             .text = info,
@@ -487,7 +544,14 @@ fn draw_status(
     }
 
     // Right-aligned indicators
-    if (current_mode == .normal) {
+    if (tree_view_state != null) {
+        const right_text: []const u8 = " j/k=Scroll  Home/End  F9/q/Esc=Close ";
+        const hint_col: u16 = @intCast(width -| right_text.len);
+        _ = win.printSegment(.{
+            .text = right_text,
+            .style = style.status_normal_style,
+        }, .{ .row_offset = status_row, .col_offset = hint_col });
+    } else if (current_mode == .normal) {
         var right_text: []const u8 = " F1=Help ";
         if (clip_op != .none and clip_count > 0) {
             const clip_label: []const u8 = if (clip_op == .cut) "cut" else "copy";
@@ -617,54 +681,49 @@ fn draw_replace(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: 
 
 fn draw_help(win: Window, total_w: usize, total_h: usize) void {
     const help_lines = [_][]const u8{
-        "         NORMAL MODE",
+        "        NAVIGATION",
         "",
         "  j / ↓       Move down",
         "  k / ↑       Move up",
-        "  l / Enter   Open / Enter dir",
-        "  h / -       Go to parent",
-        "  g g         Go to top",
-        "  G           Go to bottom",
+        "  Enter       Open / Enter dir",
+        "  - / Bksp    Go to parent",
+        "  Home        Go to top",
+        "  End         Go to bottom",
+        "",
+        "        SEARCH & FILTER",
+        "",
         "  /           Search",
         "  ?           Find recursive",
-        "  r           Search & Replace",
-        "  i           Edit mode",
-        "  .           Toggle hidden",
+        "",
+        "        SELECTION & CLIPBOARD",
+        "",
         "  Space       Select entry",
-        "  y y         Copy to clipboard",
-        "  y l         Copy path to clipboard",
-        "  d d         Cut to clipboard",
-        "  D           Delete",
-        "  n           New file/dir",
+        "  c           Copy",
+        "  x           Cut",
+        "  Y           Copy path",
         "  p           Paste",
+        "",
+        "        FILE OPERATIONS",
+        "",
+        "  .           Toggle hidden",
         "  t           Duplicate file",
-        "  C-l         Preview file",
-        "  s           Open shell here",
         "  m           Toggle bookmark",
-        "  '           Open bookmarks",
-        "  g d         Drag & drop (ripdrag)",
-        // "  C-p         Find file (ff)",
-        // "  C-f         Grep content (gg)",
+        "",
+        "        FUNCTION KEYS",
+        "",
+        "  F1          Help",
+        "  F2          Rename (edit mode)",
+        "  F3          Preview",
+        "  F4          Shell here",
         "  F5          Refresh",
+        "  F6          Search & Replace",
+        "  F7          New file/dir",
+        "  F8          Delete",
+        "  F9          Tree view",
+        "  F10         Bookmarks",
+        "  C-d         Drag & drop",
+        "",
         "  q           Quit",
-        "",
-        "         EDIT MODE",
-        "",
-        "  ↓ / C-j     Move down",
-        "  ↑ / C-k     Move up",
-        "  Esc         Review changes",
-        "  Enter       Review changes",
-        "",
-        "       REPLACE MODE",
-        "",
-        "  Tab         Switch field",
-        "  Enter       Apply changes",
-        "  Esc         Cancel",
-        "",
-        "         SEARCH MODE",
-        "",
-        "  Enter       Accept filter",
-        "  Esc         Cancel",
         "",
         "     Press any key to close",
     };

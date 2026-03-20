@@ -19,13 +19,6 @@ pub const ReplaceField = enum {
     replace_with,
 };
 
-pub const PendingKey = enum {
-    none,
-    g,
-    d,
-    y,
-};
-
 pub const ClipOp = enum {
     none,
     copy,
