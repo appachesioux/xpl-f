@@ -320,6 +320,14 @@ pub const App = struct {
             try self.enter_find_mode();
         } else if (key.matches(vaxis.Key.f1, .{})) {
             self.mode = .help;
+        } else if (key.matches(vaxis.Key.f5, .{})) {
+            try self.dir_state.scan(self.dir_state.path);
+            if (self.cursor >= self.dir_state.filtered_entries.items.len) {
+                self.cursor = if (self.dir_state.filtered_entries.items.len > 0)
+                    self.dir_state.filtered_entries.items.len - 1
+                else
+                    0;
+            }
         } else if (key.matches('m', .{})) {
             self.toggle_bookmark();
         } else if (key.matches('\'', .{})) {
@@ -1664,6 +1672,12 @@ pub const App = struct {
             error.PathAlreadyExists => {},
             else => return,
         };
+
+        std.mem.sortUnstable([]const u8, self.bookmarks.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
 
         const file = std.fs.createFileAbsolute(bk_path, .{ .truncate = true }) catch return;
         defer file.close();

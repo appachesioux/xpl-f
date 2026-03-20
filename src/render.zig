@@ -645,6 +645,7 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "  g d         Drag & drop (ripdrag)",
         // "  C-p         Find file (ff)",
         // "  C-f         Grep content (gg)",
+        "  F5          Refresh",
         "  q           Quit",
         "",
         "         EDIT MODE",
