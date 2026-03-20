@@ -66,7 +66,7 @@ pub const border_style: Style = .{
 };
 
 pub const title_style: Style = .{
-    .fg = .{ .rgb = .{ 205, 214, 244 } },
+    .fg = .{ .rgb = .{ 137, 180, 250 } },
     .bold = true,
 };
 
