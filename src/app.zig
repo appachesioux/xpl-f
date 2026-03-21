@@ -329,11 +329,11 @@ pub const App = struct {
         // Selection & clipboard
         else if (key.matches(' ', .{})) {
             self.toggle_selection();
-        } else if (key.matches('c', .{})) {
+        } else if (key.matches('y', .{})) {
             self.clip_to_clipboard(.copy);
         } else if (key.matches('x', .{})) {
             self.clip_to_clipboard(.cut);
-        } else if (key.matches('Y', .{})) {
+        } else if (key.matches('c', .{})) {
             self.copy_location();
         } else if (key.matches('p', .{})) {
             try self.paste();
@@ -342,7 +342,7 @@ pub const App = struct {
         else if (key.matches('.', .{})) {
             try self.dir_state.toggle_hidden();
             self.clamp_cursor();
-        } else if (key.matches('t', .{})) {
+        } else if (key.matches('Y', .{})) {
             try self.duplicate_entry();
         } else if (key.matches('m', .{})) {
             self.toggle_bookmark();
@@ -357,23 +357,22 @@ pub const App = struct {
         } else if (key.matches(vaxis.Key.f4, .{})) {
             self.open_shell();
         } else if (key.matches(vaxis.Key.f5, .{})) {
-            try self.dir_state.scan(self.dir_state.path);
-            if (self.cursor >= self.dir_state.filtered_entries.items.len) {
-                self.cursor = if (self.dir_state.filtered_entries.items.len > 0)
-                    self.dir_state.filtered_entries.items.len - 1
-                else
-                    0;
-            }
-        } else if (key.matches(vaxis.Key.f6, .{})) {
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const path_copy = path_buf[0..self.dir_state.path.len];
+            @memcpy(path_copy, self.dir_state.path);
+            try self.dir_state.scan(path_copy);
+            self.clamp_cursor();
+        } else if (key.matches('r', .{})) {
             try self.enter_replace_mode();
-        } else if (key.matches(vaxis.Key.f7, .{})) {
+        } else if (key.matches('n', .{})) {
             self.mode = .create;
             self.create_buf.clearRetainingCapacity();
-        } else if (key.matches(vaxis.Key.f8, .{})) {
+        } else if (key.matches('D', .{})) {
             try self.delete_selected();
-        } else if (key.matches(vaxis.Key.f9, .{})) {
+
+        } else if (key.matches('\\', .{})) {
             self.toggle_tree_view();
-        } else if (key.matches(vaxis.Key.f10, .{})) {
+        } else if (key.matches('\'', .{})) {
             self.enter_bookmark_mode();
         }
         // Drag & drop
