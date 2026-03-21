@@ -48,6 +48,13 @@ const SIZE_W: usize = 10; // "  1.2M  "
 const PERM_W: usize = 15; // " 755 rwxr-xr-x "
 const DATE_W: usize = 18; // " 2026-03-18 14:30 "
 
+// Vertical layout: blank row, top separator, header, separator, then entries
+const TOP_SEPARATOR_ROW: u16 = 0; // row 0 is blank spacing
+const HEADER_ROW: u16 = TOP_SEPARATOR_ROW + 1;
+const SEPARATOR_ROW: u16 = HEADER_ROW + 1;
+const ENTRIES_ROW: u16 = SEPARATOR_ROW + 1;
+const ROWS_BEFORE_ENTRIES: usize = ENTRIES_ROW; // rows consumed before entry list
+
 pub fn draw(
     alloc: std.mem.Allocator,
     win: Window,
@@ -96,11 +103,14 @@ pub fn draw(
     const inner_h = if (main.height > 0) main.height else return;
 
     // Status bar takes the last line inside the border
-    // Layout: row 0 = header, row 1 = separator, row 2+ = entries, last row = status
-    const list_height = if (inner_h > 3) inner_h - 3 else return;
+    // Layout: rows 0..ENTRIES_ROW = blank/header/separator, then entries, last row = status
+    const list_height = if (inner_h > ROWS_BEFORE_ENTRIES + 1) inner_h - ROWS_BEFORE_ENTRIES - 1 else return;
 
     const right_cols = SIZE_W + PERM_W + DATE_W;
     const name_w = if (inner_w > right_cols + 10) inner_w - right_cols else 10;
+
+    // Draw top separator (shared by both views)
+    draw_top_separator(main, inner_w, name_w);
 
     if (tree_view_state) |tvs| {
         // Tree view mode: render tree lines instead of normal list
@@ -192,10 +202,11 @@ fn draw_version(alloc: std.mem.Allocator, win: Window, width: usize) void {
     });
 }
 
+
 fn draw_header(win: Window, width: usize, name_w: usize) void {
     // Fill header bg
     for (0..width) |x| {
-        win.writeCell(@intCast(x), 0, .{
+        win.writeCell(@intCast(x), HEADER_ROW, .{
             .char = .{ .grapheme = " ", .width = 1 },
             .style = style.header_style,
         });
@@ -204,7 +215,7 @@ fn draw_header(win: Window, width: usize, name_w: usize) void {
     _ = win.printSegment(.{
         .text = "  Name",
         .style = style.header_style,
-    }, .{ .row_offset = 0, .col_offset = 0 });
+    }, .{ .row_offset = HEADER_ROW, .col_offset = 0 });
 
     const cols = [_]struct { off: usize, label: []const u8 }{
         .{ .off = name_w, .label = " Size" },
@@ -214,7 +225,7 @@ fn draw_header(win: Window, width: usize, name_w: usize) void {
 
     for (cols) |col| {
         if (col.off > 0 and col.off <= width) {
-            win.writeCell(@intCast(col.off - 1), 0, .{
+            win.writeCell(@intCast(col.off - 1), HEADER_ROW, .{
                 .char = .{ .grapheme = "│", .width = 1 },
                 .style = style.border_style,
             });
@@ -222,7 +233,19 @@ fn draw_header(win: Window, width: usize, name_w: usize) void {
         _ = win.printSegment(.{
             .text = col.label,
             .style = style.header_style,
-        }, .{ .row_offset = 0, .col_offset = @intCast(col.off) });
+        }, .{ .row_offset = HEADER_ROW, .col_offset = @intCast(col.off) });
+    }
+}
+
+fn draw_top_separator(win: Window, width: usize, name_w: usize) void {
+    for (0..width) |x| {
+        const is_cross = x == name_w - 1 or x == name_w + SIZE_W - 1 or x == name_w + SIZE_W + PERM_W - 1;
+        const glyph: []const u8 = if (is_cross) "┬" else "─";
+        const s = if (is_cross) style.border_style else style.dim_style;
+        win.writeCell(@intCast(x), TOP_SEPARATOR_ROW, .{
+            .char = .{ .grapheme = glyph, .width = 1 },
+            .style = s,
+        });
     }
 }
 
@@ -231,7 +254,7 @@ fn draw_header_separator(win: Window, width: usize, name_w: usize) void {
         const is_cross = x == name_w - 1 or x == name_w + SIZE_W - 1 or x == name_w + SIZE_W + PERM_W - 1;
         const glyph: []const u8 = if (is_cross) "┼" else "─";
         const s = if (is_cross) style.border_style else style.dim_style;
-        win.writeCell(@intCast(x), 1, .{
+        win.writeCell(@intCast(x), SEPARATOR_ROW, .{
             .char = .{ .grapheme = glyph, .width = 1 },
             .style = s,
         });
@@ -239,12 +262,12 @@ fn draw_header_separator(win: Window, width: usize, name_w: usize) void {
 }
 
 fn draw_tree_view(alloc: std.mem.Allocator, win: Window, width: usize, height: usize, tvs: TreeViewState) void {
-    // Use full interior height minus status bar
-    const content_h = if (height > 2) height - 2 else return;
+    // Use full interior height minus status bar and rows before entries
+    const content_h = if (height > ROWS_BEFORE_ENTRIES + 1) height - ROWS_BEFORE_ENTRIES - 1 else return;
 
-    // Header row
+    // Header row (leaving row 0 blank for spacing)
     for (0..width) |x| {
-        win.writeCell(@intCast(x), 0, .{
+        win.writeCell(@intCast(x), HEADER_ROW, .{
             .char = .{ .grapheme = " ", .width = 1 },
             .style = style.header_style,
         });
@@ -252,7 +275,7 @@ fn draw_tree_view(alloc: std.mem.Allocator, win: Window, width: usize, height: u
     _ = win.printSegment(.{
         .text = "  Tree View",
         .style = style.header_style,
-    }, .{ .row_offset = 0, .col_offset = 0 });
+    }, .{ .row_offset = HEADER_ROW, .col_offset = 0 });
 
     // Scroll percentage on the right
     if (tvs.total_lines > 0) {
@@ -262,13 +285,13 @@ fn draw_tree_view(alloc: std.mem.Allocator, win: Window, width: usize, height: u
             _ = win.printSegment(.{
                 .text = pos_str,
                 .style = style.header_style,
-            }, .{ .row_offset = 0, .col_offset = @intCast(width -| pos_str.len) });
+            }, .{ .row_offset = HEADER_ROW, .col_offset = @intCast(width -| pos_str.len) });
         }
     }
 
     // Separator
     for (0..width) |x| {
-        win.writeCell(@intCast(x), 1, .{
+        win.writeCell(@intCast(x), SEPARATOR_ROW, .{
             .char = .{ .grapheme = "─", .width = 1 },
             .style = style.dim_style,
         });
@@ -281,7 +304,7 @@ fn draw_tree_view(alloc: std.mem.Allocator, win: Window, width: usize, height: u
         row += 1;
         idx += 1;
     }) {
-        const display_row: u16 = @intCast(row + 2);
+        const display_row: u16 = @intCast(row + ENTRIES_ROW);
         const line = tvs.lines[idx];
 
         const display_style = style.file_style;
@@ -314,7 +337,7 @@ fn draw_entries(
         idx += 1;
     }) {
         const e = dir_state.get_entry(idx) orelse continue;
-        const display_row: u16 = @intCast(row + 2); // +2 for header + separator
+        const display_row: u16 = @intCast(row + ENTRIES_ROW);
         const is_cursor = idx == cursor;
 
         // Base style
@@ -567,7 +590,17 @@ fn draw_status(
 }
 
 fn draw_confirm(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, ops: []const dir_mod.DirState.EditOp) void {
-    const popup_w: u16 = @intCast(@min(200, total_w -| 4));
+    const title = "Apply changes? (y/n)";
+    var max_line_len: usize = title.len;
+    for (ops) |op| {
+        const len: usize = switch (op) {
+            .rename => |r| 12 + r.from.len + r.to.len, // "  rename: " + from + " -> " + to
+            .delete => |name| 10 + name.len, // "  delete: " + name
+        };
+        if (len > max_line_len) max_line_len = len;
+    }
+    const content_w = max_line_len + 4; // +4 for border + padding
+    const popup_w: u16 = @intCast(@min(content_w, total_w -| 4));
     const popup_h: u16 = @intCast(@min(ops.len + 4, total_h -| 4));
     if (popup_w < 20 or popup_h < 4) return;
 
@@ -590,7 +623,7 @@ fn draw_confirm(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: 
     popup.clear();
 
     _ = popup.printSegment(.{
-        .text = "Apply changes? (y/n)",
+        .text = title,
         .style = style.title_style,
     }, .{ .row_offset = 0, .col_offset = 0 });
 
