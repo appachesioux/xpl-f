@@ -567,7 +567,7 @@ fn draw_status(
 }
 
 fn draw_confirm(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, ops: []const dir_mod.DirState.EditOp) void {
-    const popup_w: u16 = @intCast(@min(100, total_w -| 4));
+    const popup_w: u16 = @intCast(@min(200, total_w -| 4));
     const popup_h: u16 = @intCast(@min(ops.len + 4, total_h -| 4));
     if (popup_w < 20 or popup_h < 4) return;
 
