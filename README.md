@@ -73,6 +73,7 @@ src/
 - `Ctrl+l`: preview flutuante
 - `.`: toggle hidden files
 - `Space`: selecionar
+- `Ctrl+a`: selecionar tudo (toggle)
 - `gd`: drag & drop via ripdrag (arquivo atual ou seleção)
 - `m`: toggle bookmark no diretório atual
 - `'`: abrir lista de bookmarks

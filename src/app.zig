@@ -310,10 +310,10 @@ pub const App = struct {
             try self.enter_or_open();
         } else if (key.matches('-', .{}) or key.matches(vaxis.Key.backspace, .{})) {
             try self.go_parent();
-        } else if (key.matches(vaxis.Key.home, .{})) {
+        } else if (key.matches(vaxis.Key.home, .{}) or key.matches('0', .{})) {
             self.cursor = 0;
             self.scroll_offset = 0;
-        } else if (key.matches(vaxis.Key.end, .{})) {
+        } else if (key.matches(vaxis.Key.end, .{}) or key.matches('$', .{})) {
             if (count > 0) {
                 self.cursor = count - 1;
                 self.adjust_scroll();
@@ -329,6 +329,8 @@ pub const App = struct {
         // Selection & clipboard
         else if (key.matches(' ', .{})) {
             self.toggle_selection();
+        } else if (key.matches('a', .{ .ctrl = true })) {
+            self.select_all();
         } else if (key.matches('y', .{})) {
             self.clip_to_clipboard(.copy);
         } else if (key.matches('x', .{})) {
@@ -1642,6 +1644,13 @@ pub const App = struct {
             e.selected = !e.selected;
         }
         self.move_cursor_down(self.dir_state.entry_count());
+    }
+
+    fn select_all(self: *App) void {
+        const has_sel = self.dir_state.has_selection();
+        for (self.dir_state.filtered_entries.items) |real_idx| {
+            self.dir_state.all_entries.items[real_idx].selected = !has_sel;
+        }
     }
 
     // ─── CURSOR HELPERS ───
