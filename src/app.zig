@@ -295,7 +295,7 @@ pub const App = struct {
                 }
             } else if (key.matches(vaxis.Key.home, .{})) {
                 self.tree_scroll = 0;
-            } else if (key.matches(vaxis.Key.f9, .{}) or key.matches('q', .{}) or key.matches(vaxis.Key.escape, .{})) {
+            } else if (key.matches(vaxis.Key.escape, .{})) {
                 self.show_tree = false;
             }
             return;
