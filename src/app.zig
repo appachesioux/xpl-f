@@ -374,7 +374,7 @@ pub const App = struct {
 
         } else if (key.matches('\\', .{})) {
             self.toggle_tree_view();
-        } else if (key.matches('\'', .{})) {
+        } else if (key.matches('b', .{})) {
             self.enter_bookmark_mode();
         }
         // Drag & drop

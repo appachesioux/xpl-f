@@ -5,6 +5,7 @@ const style = @import("style.zig");
 const mode_mod = @import("mode.zig");
 const dir_mod = @import("dir.zig");
 const entry_mod = @import("entry.zig");
+const hlp = @import("hlp");
 
 const Window = vaxis.Window;
 
@@ -591,14 +592,15 @@ fn draw_status(
 
 fn draw_confirm(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, ops: []const dir_mod.DirState.EditOp) void {
     const title = "Apply changes? (y/n)";
-    var max_line_len: usize = title.len;
-    for (ops) |op| {
-        const len: usize = switch (op) {
-            .rename => |r| 12 + r.from.len + r.to.len, // "  rename: " + from + " -> " + to
-            .delete => |name| 10 + name.len, // "  delete: " + name
-        };
-        if (len > max_line_len) max_line_len = len;
-    }
+    const max_op_len = hlp.utils.maxOf(dir_mod.DirState.EditOp, ops, struct {
+        fn f(op: dir_mod.DirState.EditOp) usize {
+            return switch (op) {
+                .rename => |r| 12 + r.from.len + r.to.len, // "  rename: " + from + " -> " + to
+                .delete => |name| 10 + name.len, // "  delete: " + name
+            };
+        }
+    }.f);
+    const max_line_len = @max(title.len, max_op_len);
     const content_w = max_line_len + 4; // +4 for border + padding
     const popup_w: u16 = @intCast(@min(content_w, total_w -| 4));
     const popup_h: u16 = @intCast(@min(ops.len + 4, total_h -| 4));
@@ -746,7 +748,7 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "  c           Copy path",
         "  y           Copy",
         "  p           Paste",
-        "  '           Bookmarks",
+        "  b           Bookmarks",
         "  m           Toggle bookmark",
         "  .           Toggle hidden",
         "",
@@ -985,7 +987,12 @@ fn draw_find(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usi
 }
 
 fn draw_bookmarks(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, bs: BookmarkState) void {
-    const popup_w: u16 = @intCast(@max(@min(total_w *| 3 / 5, total_w -| 4), 30));
+    const max_path_len = hlp.utils.maxOf([]const u8, bs.bookmarks, struct {
+        fn f(s: []const u8) usize {
+            return s.len;
+        }
+    }.f);
+    const popup_w: u16 = @intCast(@max(@min(max_path_len + 9, total_w -| 4), 30)); // +9 for indicator + border + padding + right margin
     const popup_h: u16 = @intCast(@max(@min(bs.bookmarks.len + 4, total_h -| 4), 6));
     if (popup_w < 20 or popup_h < 4) return;
 

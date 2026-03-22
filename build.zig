@@ -10,6 +10,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const hlp_dep = b.dependency("hlp", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const options = b.addOptions();
     options.addOption([]const u8, "version", zon.version);
     options.addOption([]const u8, "app_name", "xpl-f");
@@ -28,6 +33,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "vaxis", .module = vaxis_dep.module("vaxis") },
+                .{ .name = "hlp", .module = hlp_dep.module("hlp") },
                 .{ .name = "build_options", .module = options.createModule() },
             },
         }),
