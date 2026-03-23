@@ -181,7 +181,8 @@ fn draw_title(alloc: std.mem.Allocator, win: Window, path: []const u8, width: us
 
     _ = win.printSegment(.{
         .text = title,
-        .style = style.title_style,
+        // .style = style.title_style,
+        .style = style.confirm_border_style,
     }, .{
         .row_offset = 0,
         .col_offset = 2,
@@ -196,7 +197,8 @@ fn draw_version(alloc: std.mem.Allocator, win: Window, width: usize) void {
 
     _ = win.printSegment(.{
         .text = label,
-        .style = style.title_style,
+        // .style = style.title_style,
+        .style = style.confirm_border_style,
     }, .{
         .row_offset = 0,
         .col_offset = @intCast(col),
