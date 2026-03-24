@@ -751,88 +751,6 @@ fn draw_replace(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: 
     win.showCursor(cursor_col, cursor_row);
 }
 
-fn draw_help(win: Window, total_w: usize, total_h: usize) void {
-    const help_lines = [_][]const u8{
-        "        INFO",
-        "",
-        "  F1          Help",
-        "  q           Quit",
-        "",
-        "        NAVIGATION",
-        "",
-        "  j / ↓       Move down",
-        "  k / ↑       Move up",
-        "  > / Enter   Open / Enter dir",
-        "  < / -       Go to parent",
-        "  0 / Home    Go to top",
-        "  $ / End     Go to bottom",
-        "",
-        "        SEARCH & FILTER",
-        "",
-        "  /           Search",
-        "  r           Search & Replace",
-        "  ?           Find recursive",
-        "  \\           Tree view",
-        "",
-        "        OPERATIONS",
-        "",
-        "  Space       Select entry",
-        "  C-a         Select all",
-        "  C-d         Drag & drop",
-        "  n           New file/dir",
-        "  Y           Duplicate file",
-        "  D           Delete file",
-        "  x           Cut",
-        "  F2          Rename (edit mode)",
-        "  F3          Preview",
-        "  F4          Shell here",
-        "  F5          Refresh",
-        "  c           Copy path",
-        "  y           Copy",
-        "  p           Paste",
-        "  b           Bookmarks",
-        "  m           Toggle bookmark",
-        "  .           Toggle hidden",
-        "",
-        "",
-        "     Press any key to close",
-    };
-
-    const popup_w: u16 = @intCast(@min(38, total_w -| 4));
-    const popup_h: u16 = @intCast(@min(help_lines.len + 2, total_h -| 4));
-    if (popup_w < 20 or popup_h < 4) return;
-
-    const x_off: i17 = @intCast((total_w - popup_w) / 2);
-    const y_off: i17 = @intCast((total_h - popup_h) / 2);
-
-    const popup = win.child(.{
-        .x_off = x_off,
-        .y_off = y_off,
-        .width = popup_w,
-        .height = popup_h,
-        .border = .{
-            .where = .all,
-            .glyphs = .single_rounded,
-            .style = style.confirm_border_style,
-        },
-    });
-
-    popup.clear();
-
-    for (help_lines, 0..) |line, i| {
-        if (i >= popup_h -| 2) break;
-        const row: u16 = @intCast(i);
-        const line_style: vaxis.Style = if (line.len > 0 and line[0] == ' ' and line.len > 1 and line[1] == ' ' and line.len > 2 and line[2] != ' ')
-            style.file_style
-        else
-            style.title_style;
-        _ = popup.printSegment(.{
-            .text = line,
-            .style = line_style,
-        }, .{ .row_offset = row, .col_offset = 0 });
-    }
-}
-
 fn draw_preview(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, ps: PreviewState) void {
     // Popup takes ~80% of the screen
     const popup_w: u16 = @intCast(@max(@min(total_w *| 4 / 5, total_w -| 4), 30));
@@ -1258,5 +1176,89 @@ fn tab_expand(alloc: std.mem.Allocator, line: []const u8, max_w: usize) ![]const
         }
     }
     return buf.items;
+}
+
+fn draw_help(win: Window, total_w: usize, total_h: usize) void {
+    const help_lines = [_][]const u8{
+        "        INFO",
+        "",
+        "  F1          Help",
+        "  q           Quit",
+        "",
+        "        NAVIGATION",
+        "",
+        "  j / ↓       Move down",
+        "  k / ↑       Move up",
+        "  > / Enter   Open / Enter dir",
+        "  < / -       Go to parent",
+        "  0 / Home    Go to top",
+        "  $ / End     Go to bottom",
+        "  Tab         Dual Panel - Copy/Move",
+        "  C-w         Close Dual Panel",
+        "",
+        "        SEARCH & FILTER",
+        "",
+        "  /           Search",
+        "  r           Search & Replace",
+        "  ?           Find recursive",
+        "  \\           Tree view",
+        "",
+        "        OPERATIONS",
+        "",
+        "  Space       Select entry",
+        "  C-a         Select all",
+        "  C-d         Drag & drop",
+        "  n           New file/dir",
+        "  Y           Duplicate file",
+        "  D           Delete file",
+        "  x           Cut",
+        "  F2          Rename (edit mode)",
+        "  F3          Preview",
+        "  F4          Shell here",
+        "  F5          Refresh",
+        "  c           Copy path",
+        "  y           Copy",
+        "  p           Paste",
+        "  b           Bookmarks",
+        "  m           Toggle bookmark",
+        "  .           Toggle hidden",
+        "",
+        "",
+        "     Press any key to close",
+    };
+
+    const popup_w: u16 = @intCast(@min(38, total_w -| 4));
+    const popup_h: u16 = @intCast(@min(help_lines.len + 2, total_h -| 4));
+    if (popup_w < 20 or popup_h < 4) return;
+
+    const x_off: i17 = @intCast((total_w - popup_w) / 2);
+    const y_off: i17 = @intCast((total_h - popup_h) / 2);
+
+    const popup = win.child(.{
+        .x_off = x_off,
+        .y_off = y_off,
+        .width = popup_w,
+        .height = popup_h,
+        .border = .{
+            .where = .all,
+            .glyphs = .single_rounded,
+            .style = style.confirm_border_style,
+        },
+    });
+
+    popup.clear();
+
+    for (help_lines, 0..) |line, i| {
+        if (i >= popup_h -| 2) break;
+        const row: u16 = @intCast(i);
+        const line_style: vaxis.Style = if (line.len > 0 and line[0] == ' ' and line.len > 1 and line[1] == ' ' and line.len > 2 and line[2] != ' ')
+            style.file_style
+        else
+            style.title_style;
+        _ = popup.printSegment(.{
+            .text = line,
+            .style = line_style,
+        }, .{ .row_offset = row, .col_offset = 0 });
+    }
 }
 
