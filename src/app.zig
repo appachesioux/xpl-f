@@ -306,9 +306,9 @@ pub const App = struct {
             self.move_cursor_down(count);
         } else if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
             self.move_cursor_up();
-        } else if (key.matches(vaxis.Key.enter, .{})) {
+        } else if (key.matches(vaxis.Key.enter, .{}) or key.matches(vaxis.Key.right, .{})) {
             try self.enter_or_open();
-        } else if (key.matches('-', .{}) or key.matches(vaxis.Key.backspace, .{})) {
+        } else if (key.matches('-', .{}) or key.matches(vaxis.Key.backspace, .{}) or key.matches(vaxis.Key.left, .{})) {
             try self.go_parent();
         } else if (key.matches(vaxis.Key.home, .{}) or key.matches('0', .{})) {
             self.cursor = 0;

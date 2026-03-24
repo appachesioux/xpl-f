@@ -5,7 +5,7 @@ const style = @import("style.zig");
 const mode_mod = @import("mode.zig");
 const dir_mod = @import("dir.zig");
 const entry_mod = @import("entry.zig");
-const hlp = @import("hlp");
+const utils = @import("utils.zig");
 
 const Window = vaxis.Window;
 
@@ -594,7 +594,7 @@ fn draw_status(
 
 fn draw_confirm(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, ops: []const dir_mod.DirState.EditOp) void {
     const title = "Apply changes? (y/n)";
-    const max_op_len = hlp.utils.maxOf(dir_mod.DirState.EditOp, ops, struct {
+    const max_op_len = utils.maxOf(dir_mod.DirState.EditOp, ops, struct {
         fn f(op: dir_mod.DirState.EditOp) usize {
             return switch (op) {
                 .rename => |r| 12 + r.from.len + r.to.len, // "  rename: " + from + " -> " + to
@@ -989,7 +989,7 @@ fn draw_find(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usi
 }
 
 fn draw_bookmarks(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, bs: BookmarkState) void {
-    const max_path_len = hlp.utils.maxOf([]const u8, bs.bookmarks, struct {
+    const max_path_len = utils.maxOf([]const u8, bs.bookmarks, struct {
         fn f(s: []const u8) usize {
             return s.len;
         }
