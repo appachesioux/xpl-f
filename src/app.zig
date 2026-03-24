@@ -63,6 +63,9 @@ pub const App = struct {
     find_cursor: usize,
     find_scroll: usize,
     find_arena: std.heap.ArenaAllocator,
+    find_saved_path: ?[]const u8,
+    find_saved_cursor: usize,
+    find_saved_scroll: usize,
 
     // Bookmark mode
     bookmarks: std.ArrayList([]const u8),
@@ -74,6 +77,13 @@ pub const App = struct {
     tree_lines: std.ArrayList([]const u8),
     tree_scroll: usize,
     tree_total_lines: usize,
+
+    // Dual-panel (destination panel)
+    dual_panel: bool,
+    dest_active: bool, // true = destination panel has focus
+    dest_state: dir_mod.DirState,
+    dest_cursor: usize,
+    dest_scroll: usize,
 
     should_quit: bool,
 
@@ -116,6 +126,9 @@ pub const App = struct {
             .find_cursor = 0,
             .find_scroll = 0,
             .find_arena = std.heap.ArenaAllocator.init(allocator),
+            .find_saved_path = null,
+            .find_saved_cursor = 0,
+            .find_saved_scroll = 0,
             .bookmarks = .{},
             .bookmark_cursor = 0,
             .bookmark_scroll = 0,
@@ -123,6 +136,11 @@ pub const App = struct {
             .tree_lines = .{},
             .tree_scroll = 0,
             .tree_total_lines = 0,
+            .dual_panel = false,
+            .dest_active = false,
+            .dest_state = dir_mod.DirState.init(allocator),
+            .dest_cursor = 0,
+            .dest_scroll = 0,
             .should_quit = false,
         };
 
@@ -167,6 +185,7 @@ pub const App = struct {
         self.bookmarks.deinit(self.allocator);
         self.frame_arena.deinit();
         self.dir_state.deinit();
+        self.dest_state.deinit();
         self.loop.stop();
         self.vx.exitAltScreen(self.tty.writer()) catch {};
         self.vx.deinit(self.allocator, self.tty.writer());
@@ -248,6 +267,13 @@ pub const App = struct {
             .total_lines = self.tree_total_lines,
         } else null;
 
+        const dest_panel_state: ?render.DestPanelState = if (self.dual_panel) .{
+            .dir_state = &self.dest_state,
+            .cursor = self.dest_cursor,
+            .scroll = self.dest_scroll,
+            .active = self.dest_active,
+        } else null;
+
         render.draw(
             frame_alloc,
             win,
@@ -267,6 +293,7 @@ pub const App = struct {
             find_state,
             bookmark_state,
             tree_view_state,
+            dest_panel_state,
         );
 
         if (self.mode != .edit and self.mode != .replace and self.mode != .create) {
@@ -301,6 +328,34 @@ pub const App = struct {
             return;
         }
 
+        // Dual-panel: Tab to open/toggle, Ctrl+W to close
+        if (key.matches(vaxis.Key.tab, .{})) {
+            if (!self.dual_panel) {
+                // Open destination panel with same directory
+                try self.dest_state.scan(self.dir_state.path);
+                self.dest_cursor = 0;
+                self.dest_scroll = 0;
+                self.dual_panel = true;
+                self.dest_active = true;
+            } else {
+                self.dest_active = !self.dest_active;
+            }
+            return;
+        }
+        if (key.matches('w', .{ .ctrl = true })) {
+            if (self.dual_panel) {
+                self.dual_panel = false;
+                self.dest_active = false;
+            }
+            return;
+        }
+
+        // When destination panel is active, handle only basic navigation
+        if (self.dual_panel and self.dest_active) {
+            try self.handle_dest_panel(key);
+            return;
+        }
+
         // Navigation
         if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
             self.move_cursor_down(count);
@@ -320,7 +375,14 @@ pub const App = struct {
             }
         }
         // Search & filter
-        else if (key.matches('/', .{})) {
+        else if (key.matches(vaxis.Key.escape, .{})) {
+            if (self.dir_state.search_query.items.len > 0) {
+                self.search_buf.clearRetainingCapacity();
+                self.dir_state.search_query.clearRetainingCapacity();
+                try self.dir_state.apply_filter();
+                self.clamp_cursor();
+            }
+        } else if (key.matches('/', .{})) {
             self.mode = .search;
             self.search_buf.clearRetainingCapacity();
         } else if (key.matches('?', .{})) {
@@ -510,7 +572,29 @@ pub const App = struct {
         }
 
         if (key.matches(vaxis.Key.enter, .{})) {
+            // Guarda o nome do item selecionado antes de limpar o filtro
+            const selected_name = if (self.dir_state.get_entry(self.cursor)) |e| e.name else null;
+
             self.mode = .normal;
+            self.search_buf.clearRetainingCapacity();
+            self.dir_state.search_query.clearRetainingCapacity();
+            try self.dir_state.apply_filter();
+
+            // Posiciona o cursor no item que estava selecionado
+            if (selected_name) |name| {
+                for (0..self.dir_state.entry_count()) |i| {
+                    if (self.dir_state.get_entry(i)) |e| {
+                        if (std.mem.eql(u8, e.name, name)) {
+                            self.cursor = i;
+                            self.adjust_scroll();
+                            break;
+                        }
+                    }
+                }
+            } else {
+                self.cursor = 0;
+                self.scroll_offset = 0;
+            }
             return;
         }
 
@@ -704,6 +788,12 @@ pub const App = struct {
         self.find_all_paths.clearRetainingCapacity();
         self.find_filtered.clearRetainingCapacity();
         _ = self.find_arena.reset(.retain_capacity);
+
+        // Salva estado atual para restaurar no Escape (copia path no find_arena)
+        const arena_alloc = self.find_arena.allocator();
+        self.find_saved_path = try arena_alloc.dupe(u8, self.dir_state.path);
+        self.find_saved_cursor = self.cursor;
+        self.find_saved_scroll = self.scroll_offset;
         self.find_cursor = 0;
         self.find_scroll = 0;
 
@@ -726,6 +816,15 @@ pub const App = struct {
 
     fn handle_find(self: *App, key: vaxis.Key) !void {
         if (key.matches(vaxis.Key.escape, .{})) {
+            // Restaura estado anterior ao find
+            if (self.find_saved_path) |saved_path| {
+                if (!std.mem.eql(u8, saved_path, self.dir_state.path)) {
+                    try self.dir_state.scan(saved_path);
+                }
+                self.cursor = self.find_saved_cursor;
+                self.scroll_offset = self.find_saved_scroll;
+                self.find_saved_path = null;
+            }
             self.mode = .normal;
             return;
         }
@@ -735,28 +834,28 @@ pub const App = struct {
             return;
         }
 
-        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+        if (key.matches(vaxis.Key.down, .{})) {
             if (self.find_filtered.items.len > 0 and self.find_cursor + 1 < self.find_filtered.items.len) {
                 self.find_cursor += 1;
                 self.adjust_find_scroll();
             }
             return;
         }
-        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+        if (key.matches(vaxis.Key.up, .{})) {
             if (self.find_cursor > 0) {
                 self.find_cursor -= 1;
                 self.adjust_find_scroll();
             }
             return;
         }
-        if (key.matches('G', .{})) {
+        if (key.matches(vaxis.Key.end, .{})) {
             if (self.find_filtered.items.len > 0) {
                 self.find_cursor = self.find_filtered.items.len - 1;
                 self.adjust_find_scroll();
             }
             return;
         }
-        if (key.matches('g', .{})) {
+        if (key.matches(vaxis.Key.home, .{})) {
             self.find_cursor = 0;
             self.find_scroll = 0;
             return;
@@ -793,8 +892,8 @@ pub const App = struct {
     }
 
     fn adjust_find_scroll(self: *App) void {
-        // Keep cursor visible in popup (estimate ~20 visible lines)
-        const visible: usize = 20;
+        const win = self.vx.window();
+        const visible = if (win.height > 6) win.height - 6 else 1;
         if (self.find_cursor < self.find_scroll) {
             self.find_scroll = self.find_cursor;
         } else if (self.find_cursor >= self.find_scroll + visible) {
@@ -1216,7 +1315,8 @@ pub const App = struct {
                 continue;
             };
             var dst_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const dst_path = resolve_available_path(self.dir_state.path, basename, src_stat.kind == .directory, &dst_buf) orelse {
+            const paste_dir = if (self.dual_panel) self.dest_state.path else self.dir_state.path;
+            const dst_path = resolve_available_path(paste_dir, basename, src_stat.kind == .directory, &dst_buf) orelse {
                 skipped += 1;
                 continue;
             };
@@ -1256,6 +1356,16 @@ pub const App = struct {
         defer self.allocator.free(path_copy);
         try self.dir_state.scan(path_copy);
         self.clamp_cursor();
+
+        if (self.dual_panel) {
+            const dest_copy = try self.allocator.dupe(u8, self.dest_state.path);
+            defer self.allocator.free(dest_copy);
+            try self.dest_state.scan(dest_copy);
+            const dest_count = self.dest_state.entry_count();
+            if (self.dest_cursor >= dest_count) {
+                self.dest_cursor = if (dest_count > 0) dest_count - 1 else 0;
+            }
+        }
 
         if (skipped > 0) {
             const msg = std.fmt.bufPrint(&self.message_buf, "Pasted {d}, skipped {d} (already exist)", .{ ok, skipped }) catch "Done";
@@ -1421,6 +1531,92 @@ pub const App = struct {
         self.vx.enterAltScreen(self.tty.writer()) catch {};
         self.loop.start() catch return;
         self.vx.queueRefresh();
+    }
+
+    // ─── DESTINATION PANEL ───
+
+    fn handle_dest_panel(self: *App, key: vaxis.Key) !void {
+        const count = self.dest_state.entry_count();
+
+        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+            if (count > 0 and self.dest_cursor + 1 < count) {
+                self.dest_cursor += 1;
+                self.adjust_dest_scroll();
+            }
+        } else if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+            if (self.dest_cursor > 0) {
+                self.dest_cursor -= 1;
+                self.adjust_dest_scroll();
+            }
+        } else if (key.matches(vaxis.Key.enter, .{}) or key.matches(vaxis.Key.right, .{})) {
+            // Enter directory only
+            const entry = self.dest_state.get_entry(self.dest_cursor) orelse return;
+            if (entry.kind == .dir) {
+                var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const new_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ self.dest_state.path, entry.name }) catch return;
+                var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const resolved = std.fs.cwd().realpath(new_path, &real_buf) catch new_path;
+                try self.dest_state.scan(resolved);
+                self.dest_cursor = 0;
+                self.dest_scroll = 0;
+            }
+        } else if (key.matches('-', .{}) or key.matches(vaxis.Key.backspace, .{}) or key.matches(vaxis.Key.left, .{})) {
+            // Go parent
+            const path = self.dest_state.path;
+            if (std.mem.eql(u8, path, "/")) return;
+            const last_sep = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
+            var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const parent_src = if (last_sep == 0) "/" else path[0..last_sep];
+            @memcpy(parent_buf[0..parent_src.len], parent_src);
+            const parent = parent_buf[0..parent_src.len];
+
+            const basename = path[last_sep + 1 ..];
+            var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+            @memcpy(name_buf[0..basename.len], basename);
+            const old_name = name_buf[0..basename.len];
+
+            try self.dest_state.scan(parent);
+            self.dest_cursor = 0;
+            self.dest_scroll = 0;
+
+            for (0..self.dest_state.entry_count()) |i| {
+                if (self.dest_state.get_entry(i)) |e| {
+                    if (std.mem.eql(u8, e.name, old_name)) {
+                        self.dest_cursor = i;
+                        self.adjust_dest_scroll();
+                        break;
+                    }
+                }
+            }
+        } else if (key.matches(vaxis.Key.home, .{}) or key.matches('0', .{})) {
+            self.dest_cursor = 0;
+            self.dest_scroll = 0;
+        } else if (key.matches(vaxis.Key.end, .{}) or key.matches('$', .{})) {
+            if (count > 0) {
+                self.dest_cursor = count - 1;
+                self.adjust_dest_scroll();
+            }
+        } else if (key.matches('.', .{})) {
+            // Toggle hidden files
+            self.dest_state.show_hidden = !self.dest_state.show_hidden;
+            self.dest_state.apply_filter() catch {};
+            self.dest_cursor = 0;
+            self.dest_scroll = 0;
+        } else if (key.matches('p', .{})) {
+            try self.paste();
+        } else if (key.matches('q', .{})) {
+            self.should_quit = true;
+        }
+    }
+
+    fn adjust_dest_scroll(self: *App) void {
+        const win = self.vx.window();
+        const visible_height = if (win.height > 6) win.height - 6 else 1;
+        if (self.dest_cursor < self.dest_scroll) {
+            self.dest_scroll = self.dest_cursor;
+        } else if (self.dest_cursor >= self.dest_scroll + visible_height) {
+            self.dest_scroll = self.dest_cursor - visible_height + 1;
+        }
     }
 
     fn enter_or_open(self: *App) !void {

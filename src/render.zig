@@ -44,6 +44,13 @@ pub const TreeViewState = struct {
     total_lines: usize,
 };
 
+pub const DestPanelState = struct {
+    dir_state: *const dir_mod.DirState,
+    cursor: usize,
+    scroll: usize,
+    active: bool, // has focus
+};
+
 // Fixed column widths (right-aligned columns); Name takes the rest
 const SIZE_W: usize = 10; // "  1.2M  "
 const PERM_W: usize = 15; // " 755 rwxr-xr-x "
@@ -75,29 +82,35 @@ pub fn draw(
     find_state: ?FindState,
     bookmark_state: ?BookmarkState,
     tree_view_state: ?TreeViewState,
+    dest_panel: ?DestPanelState,
 ) void {
     const width = win.width;
     const height = win.height;
     if (width < 10 or height < 5) return;
 
-    // Main bordered area
+    // Calculate panel width
+    const panel_w: usize = if (dest_panel != null) width / 2 else width;
+
+    // Main bordered area (left panel)
     const main = win.child(.{
         .x_off = 0,
         .y_off = 0,
-        .width = width,
+        .width = @intCast(panel_w),
         .height = height,
         .border = .{
             .where = .all,
             .glyphs = .single_rounded,
-            .style = style.border_style,
+            .style = if (dest_panel != null and dest_panel.?.active) style.dim_style else style.border_style,
         },
     });
 
     // Title in the top border
-    draw_title(alloc, win, dir_state.path, width);
+    draw_title(alloc, if (dest_panel != null) main else win, dir_state.path, panel_w);
 
-    // Version in the top-right border
-    draw_version(alloc, win, width);
+    // Version in the top-right border (only when single panel)
+    if (dest_panel == null) {
+        draw_version(alloc, win, width);
+    }
 
     // Interior dimensions (inside border)
     const inner_w = if (main.width > 0) main.width else return;
@@ -116,6 +129,10 @@ pub fn draw(
     if (tree_view_state) |tvs| {
         // Tree view mode: render tree lines instead of normal list
         draw_tree_view(alloc, main, inner_w, inner_h, tvs);
+    } else if (current_mode == .find) {
+        if (find_state) |fs| {
+            draw_find_inline(alloc, main, inner_w, list_height, fs);
+        }
     } else {
         // Draw header
         draw_header(main, inner_w, name_w);
@@ -128,7 +145,7 @@ pub fn draw(
     }
 
     // Draw status bar
-    draw_status(alloc, main, inner_w, inner_h, current_mode, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf, tree_view_state);
+    draw_status(alloc, main, inner_w, inner_h, current_mode, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf, find_state, tree_view_state);
 
     // Draw confirm popup if in confirm mode
     if (current_mode == .confirm) {
@@ -156,18 +173,18 @@ pub fn draw(
         }
     }
 
-    // Draw find popup
-    if (current_mode == .find) {
-        if (find_state) |fs| {
-            draw_find(alloc, win, width, height, fs);
-        }
-    }
+    // find popup removido — find agora é inline
 
     // Draw bookmark popup
     if (current_mode == .bookmark) {
         if (bookmark_state) |bs| {
             draw_bookmarks(alloc, win, width, height, bs);
         }
+    }
+
+    // Draw destination panel
+    if (dest_panel) |dp| {
+        draw_dest_panel(alloc, win, dp, panel_w, width, height);
     }
 }
 
@@ -481,6 +498,7 @@ fn draw_status(
     clip_op: mode_mod.ClipOp,
     clip_count: usize,
     create_buf: []const u8,
+    find_state: ?FindState,
     tree_view_state: ?TreeViewState,
 ) void {
     const status_row: u16 = @intCast(height -| 1);
@@ -539,6 +557,14 @@ fn draw_status(
             .text = info,
             .style = style.status_info_style,
         }, .{ .row_offset = status_row, .col_offset = offset });
+    } else if (current_mode == .find) {
+        if (find_state) |fs| {
+            const info = std.fmt.allocPrint(alloc, "?{s}", .{fs.query}) catch return;
+            _ = win.printSegment(.{
+                .text = info,
+                .style = style.status_info_style,
+            }, .{ .row_offset = status_row, .col_offset = offset });
+        }
     } else if (current_mode == .create) {
         const hint: []const u8 = if (create_buf.len > 0 and create_buf[create_buf.len - 1] == '/') "(dir) " else "(file) ";
         const info = std.fmt.allocPrint(alloc, "New {s}{s}", .{ hint, create_buf }) catch return;
@@ -577,6 +603,15 @@ fn draw_status(
             .text = right_text,
             .style = style.status_normal_style,
         }, .{ .row_offset = status_row, .col_offset = hint_col });
+    } else if (current_mode == .find) {
+        if (find_state) |fs| {
+            const right_text = std.fmt.allocPrint(alloc, " {d}/{d} ", .{ fs.filtered.len, fs.results.items.len }) catch return;
+            const hint_col: u16 = @intCast(width -| right_text.len);
+            _ = win.printSegment(.{
+                .text = right_text,
+                .style = style.status_normal_style,
+            }, .{ .row_offset = status_row, .col_offset = hint_col });
+        }
     } else if (current_mode == .normal) {
         var right_text: []const u8 = " F1=Help ";
         if (clip_op != .none and clip_count > 0) {
@@ -718,12 +753,17 @@ fn draw_replace(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: 
 
 fn draw_help(win: Window, total_w: usize, total_h: usize) void {
     const help_lines = [_][]const u8{
+        "        INFO",
+        "",
+        "  F1          Help",
+        "  q           Quit",
+        "",
         "        NAVIGATION",
         "",
         "  j / ↓       Move down",
         "  k / ↑       Move up",
-        "  Enter       Open / Enter dir",
-        "  - / Bksp    Go to parent",
+        "  > / Enter   Open / Enter dir",
+        "  < / -       Go to parent",
         "  0 / Home    Go to top",
         "  $ / End     Go to bottom",
         "",
@@ -754,10 +794,6 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "  m           Toggle bookmark",
         "  .           Toggle hidden",
         "",
-        "        OTHERS",
-        "",
-        "  F1          Help",
-        "  q           Quit",
         "",
         "     Press any key to close",
     };
@@ -900,6 +936,133 @@ fn draw_preview(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: 
             .text = pos_str,
             .style = style.dim_style,
         }, .{ .row_offset = hint_row, .col_offset = pos_col });
+    }
+}
+
+fn draw_dest_panel(alloc: std.mem.Allocator, win: Window, dp: DestPanelState, panel_w: usize, total_w: usize, total_h: usize) void {
+    const x_off: u16 = @intCast(panel_w);
+    const dest_w: u16 = @intCast(total_w - panel_w);
+
+    const dest = win.child(.{
+        .x_off = @intCast(x_off),
+        .y_off = 0,
+        .width = dest_w,
+        .height = @intCast(total_h),
+        .border = .{
+            .where = .all,
+            .glyphs = .single_rounded,
+            .style = if (dp.active) style.border_style else style.dim_style,
+        },
+    });
+
+    // Title
+    draw_title(alloc, dest, dp.dir_state.path, dest_w);
+
+    const inner_w = if (dest.width > 0) dest.width else return;
+    const inner_h = if (dest.height > 0) dest.height else return;
+
+    const list_height = if (inner_h > ROWS_BEFORE_ENTRIES + 1) inner_h - ROWS_BEFORE_ENTRIES - 1 else return;
+
+    // Simplified: only show name column
+    draw_top_separator(dest, inner_w, inner_w);
+
+    // Header (just "Name")
+    _ = dest.printSegment(.{
+        .text = "  Name",
+        .style = style.header_style,
+    }, .{ .row_offset = HEADER_ROW, .col_offset = 0 });
+
+    // Separator
+    for (0..inner_w) |x| {
+        dest.writeCell(@intCast(x), SEPARATOR_ROW, .{
+            .char = .{ .grapheme = "─", .width = 1 },
+            .style = style.dim_style,
+        });
+    }
+
+    // Entries
+    const count = dp.dir_state.entry_count();
+    var row: usize = 0;
+    var idx = dp.scroll;
+    while (row < list_height and idx < count) : ({
+        row += 1;
+        idx += 1;
+    }) {
+        const e = dp.dir_state.get_entry(idx) orelse continue;
+        const display_row: u16 = @intCast(row + ENTRIES_ROW);
+        const is_cursor = idx == dp.cursor;
+
+        var entry_style = e.get_style();
+        if (is_cursor) {
+            entry_style.reverse = true;
+        }
+
+        for (0..inner_w) |x| {
+            dest.writeCell(@intCast(x), display_row, .{
+                .char = .{ .grapheme = " ", .width = 1 },
+                .style = entry_style,
+            });
+        }
+
+        const disp_buf = alloc.alloc(u8, 512) catch return;
+        const display_name = e.display_name(disp_buf);
+        const indicator: []const u8 = if (is_cursor) ">" else " ";
+        const icon = e.get_icon();
+        const full_name = std.fmt.allocPrint(alloc, "{s} {s}{s}", .{ indicator, icon, display_name }) catch display_name;
+        _ = dest.printSegment(.{
+            .text = full_name,
+            .style = entry_style,
+        }, .{ .row_offset = display_row, .col_offset = 0 });
+    }
+
+    // Status bar
+    const status_row: u16 = @intCast(inner_h -| 1);
+    for (0..inner_w) |x| {
+        dest.writeCell(@intCast(x), status_row, .{
+            .char = .{ .grapheme = " ", .width = 1 },
+            .style = style.status_info_style,
+        });
+    }
+    if (count > 0) {
+        const info = std.fmt.allocPrint(alloc, " {d}/{d}", .{ dp.cursor + 1, count }) catch return;
+        _ = dest.printSegment(.{
+            .text = info,
+            .style = style.status_info_style,
+        }, .{ .row_offset = status_row, .col_offset = 0 });
+    }
+}
+
+fn draw_find_inline(alloc: std.mem.Allocator, win: Window, width: usize, list_height: usize, fs: FindState) void {
+    var row: usize = 0;
+    var idx = fs.scroll;
+    while (row < list_height and idx < fs.filtered.len) : ({
+        row += 1;
+        idx += 1;
+    }) {
+        const real_idx = fs.filtered[idx];
+        const path = fs.results.items[real_idx];
+        const display_row: u16 = @intCast(row + ENTRIES_ROW);
+        const is_cursor = idx == fs.cursor;
+
+        var entry_style: vaxis.Style = style.file_style;
+        if (is_cursor) {
+            entry_style.reverse = true;
+        }
+
+        // Fill row background
+        for (0..width) |x| {
+            win.writeCell(@intCast(x), display_row, .{
+                .char = .{ .grapheme = " ", .width = 1 },
+                .style = entry_style,
+            });
+        }
+
+        const indicator: []const u8 = if (is_cursor) "> " else "  ";
+        const line = std.fmt.allocPrint(alloc, "{s}{s}", .{ indicator, path }) catch continue;
+        _ = win.printSegment(.{
+            .text = line,
+            .style = entry_style,
+        }, .{ .row_offset = display_row, .col_offset = 0 });
     }
 }
 
