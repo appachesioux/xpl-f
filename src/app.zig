@@ -328,8 +328,8 @@ pub const App = struct {
             return;
         }
 
-        // Dual-panel: Tab to open/toggle, Ctrl+W to close
-        if (key.matches(vaxis.Key.tab, .{})) {
+        // Dual-panel: Ctrl+S to toggle panel, Tab to switch focus
+        if (key.matches('s', .{ .ctrl = true })) {
             if (!self.dual_panel) {
                 // Open destination panel with same directory
                 try self.dest_state.scan(self.dir_state.path);
@@ -338,14 +338,14 @@ pub const App = struct {
                 self.dual_panel = true;
                 self.dest_active = true;
             } else {
-                self.dest_active = !self.dest_active;
+                self.dual_panel = false;
+                self.dest_active = false;
             }
             return;
         }
-        if (key.matches('w', .{ .ctrl = true })) {
+        if (key.matches(vaxis.Key.tab, .{})) {
             if (self.dual_panel) {
-                self.dual_panel = false;
-                self.dest_active = false;
+                self.dest_active = !self.dest_active;
             }
             return;
         }
@@ -363,7 +363,7 @@ pub const App = struct {
             self.move_cursor_up();
         } else if (key.matches(vaxis.Key.enter, .{}) or key.matches(vaxis.Key.right, .{})) {
             try self.enter_or_open();
-        } else if (key.matches('-', .{}) or key.matches(vaxis.Key.backspace, .{}) or key.matches(vaxis.Key.left, .{})) {
+        } else if (key.matches('-', .{}) or key.matches(vaxis.Key.left, .{})) {
             try self.go_parent();
         } else if (key.matches(vaxis.Key.home, .{}) or key.matches('0', .{})) {
             self.cursor = 0;

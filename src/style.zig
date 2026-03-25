@@ -95,6 +95,10 @@ pub const dim_style: Style = .{
     .fg = .{ .rgb = .{ 108, 112, 134 } },
 };
 
+pub const dest_active_border_style: Style = .{
+    .fg = .{ .rgb = .{ 166, 227, 161 } }, // green – destination panel active
+};
+
 pub const preview_border_style: Style = .{
     .fg = .{ .rgb = .{ 137, 180, 250 } }, // blue
     .bold = true,

@@ -1,9 +1,10 @@
 [Desktop Entry]
 Name=xpl-f - File Explorer
 Comment=File Explorer
-Exec=/usr/bin/xpl-f
+Exec=alacritty --class xpl-f -e /usr/bin/xpl-f
 Icon=xpl-f
 Type=Application
-Terminal=true
+Terminal=false
+StartupWMClass=xpl-f
 Categories=Utility;
 Keywords=find;files;search;
