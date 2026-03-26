@@ -5,10 +5,10 @@ File explorer TUI, built as a study project for learning Zig.
 Written with assistance from Claude Code
 
 <p align="center">
-  <img src="screenshots/xpl-f-help.png" width="280" alt="xpl-f help">&nbsp;&nbsp;&nbsp;
-  <img src="screenshots/xpl-f-split.png" width="280" alt="xpl-f split">
+  <img src="screenshots/xpl-f-help.png" width="350" alt="xpl-f help">&nbsp;&nbsp;&nbsp;
+  <img src="screenshots/xpl-f-split.png" width="350" alt="xpl-f split">
 </p>
-<p align="center"><em>help (esquerda) &nbsp;|&nbsp; split (direita)</em></p>
+<p align="center"><em>help (esquerda) &nbsp;|&nbsp; split panel (direita)</em></p>
 
 ## Stack
 
