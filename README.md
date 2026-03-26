@@ -4,7 +4,11 @@ File explorer TUI, built as a study project for learning Zig.
 
 Written with assistance from Claude Code
 
-![xpl-f screenshot](xpl-f-tela.png)
+<p align="center">
+  <img src="screenshots/xpl-f-help.png" width="280" alt="xpl-f help">&nbsp;&nbsp;&nbsp;
+  <img src="screenshots/xpl-f-split.png" width="280" alt="xpl-f split">
+</p>
+<p align="center"><em>help (esquerda) &nbsp;|&nbsp; split (direita)</em></p>
 
 ## Stack
 
