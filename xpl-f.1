@@ -1,0 +1,144 @@
+.TH XPL-F 1 "2026-03-26" "xpl-f" "User Commands"
+.SH NAME
+xpl-f \- terminal file explorer with vim-style keybindings
+.SH SYNOPSIS
+.B xpl-f
+.RI [ directory ]
+.SH DESCRIPTION
+.B xpl-f
+is a TUI file explorer built with Zig and libvaxis.
+It provides vim-style navigation, dual panels, fuzzy search,
+file preview, bookmarks, and clipboard operations.
+.PP
+If
+.I directory
+is given, xpl-f opens in that directory.
+Otherwise it opens in the current working directory.
+.SH KEYBINDINGS
+.SS General
+.TP
+.B F1
+Help popup
+.TP
+.B q
+Quit
+.SS Navigation
+.TP
+.B j / Down
+Move down
+.TP
+.B k / Up
+Move up
+.TP
+.B l / Enter
+Open file or enter directory
+.TP
+.B h / \-
+Go to parent directory
+.TP
+.B 0 / Home
+Go to top
+.TP
+.B $ / End
+Go to bottom
+.TP
+.B Ctrl+s
+Toggle dual panel
+.TP
+.B Tab
+Switch focus between panels
+.SS Search & Filter
+.TP
+.B /
+Fuzzy search
+.TP
+.B r
+Search & replace in filenames
+.TP
+.B ?
+Find recursive
+.TP
+.B \e\e
+Tree view
+.SS Operations
+.TP
+.B Space
+Select entry
+.TP
+.B Ctrl+a
+Select all (toggle)
+.TP
+.B Ctrl+d
+Drag & drop (via ripdrag)
+.TP
+.B n
+New file or directory
+.TP
+.B Y
+Duplicate file
+.TP
+.B D
+Delete file or selection
+.TP
+.B x
+Cut to clipboard
+.TP
+.B y
+Copy to clipboard
+.TP
+.B p
+Paste from clipboard
+.TP
+.B c
+Copy path to system clipboard
+.TP
+.B F2
+Rename (edit mode)
+.TP
+.B F3
+Preview file contents
+.TP
+.B F4
+Open shell in current directory
+.TP
+.B F5
+Refresh directory listing
+.TP
+.B m
+Toggle bookmark on current directory
+.TP
+.B b
+Open bookmarks list
+.TP
+.B .
+Toggle hidden files
+.SH PREVIEW
+Pressing
+.B F3
+opens a floating preview window.
+.PP
+Text files are shown with line numbers; scroll with
+.B j/k\fR.
+Directories show a recursive tree view (up to 3 levels).
+Binary files display
+.IR "[binary file]" .
+.SH FILE OPENING
+Binary file types (pdf, png, mp4, etc.) are opened with
+.BR xdg-open (1)
+in the background.
+.PP
+Text files are opened in
+.B $EDITOR
+(fallback:
+.BR vi ).
+.SH ENVIRONMENT
+.TP
+.B EDITOR
+Text editor for opening files. Defaults to
+.BR vi .
+.SH AUTHORS
+Written as a Zig learning project with assistance from Claude Code.
+.SH SEE ALSO
+.BR ranger (1),
+.BR lf (1),
+.BR nnn (1)

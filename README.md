@@ -14,6 +14,15 @@ Written with assistance from Claude Code
   <em>split panel (Ctrl+S)</em>
 </p>
 
+## Quick Start
+
+```sh
+zig build run                     # abre no diretório atual
+zig build run -- /path/to/dir     # abre em diretório específico
+```
+
+Navegue com `j/k`, abra com `Enter`, volte com `-`. Pressione `F1` para ver todos os atalhos.
+
 ## Stack
 
 - **Zig 0.15** com **libvaxis** (terminal rendering)
@@ -29,7 +38,14 @@ zig build run                     # run direto
 zig build run -- /path/to/dir     # abrir em diretório específico
 ```
 
-O binário fica em `zig-out/bin/xpl-f`. Deploy script em `xpl-deploy`.
+O binário fica em `zig-out/bin/xpl-f`. Deploy script em `0-deploy`.
+
+### Man page
+
+```sh
+sudo cp xpl-f.1 /usr/local/share/man/man1/
+man xpl-f
+```
 
 ## Arquitetura
 
