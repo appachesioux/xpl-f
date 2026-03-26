@@ -81,26 +81,39 @@ src/
 
 ### Keybindings (normal mode)
 
+**Navegação**
 - `j/k` ou setas: navegar
-- `l/Enter`: abrir (texto → $EDITOR, binários → xdg-open)
-- `h/-`: diretório pai
-- `gg/G`: topo/fim
-- `/`: busca
-- `r`: search & replace
-- `i`: edit mode
-- `yy`: copiar para clipboard
-- `yl`: copiar path para clipboard do sistema
-- `dd`: cortar para clipboard
-- `D`: deletar arquivo/seleção
-- `p`: colar (paste)
-- `t`: duplicar arquivo no local (sufixo -1, -2, ...)
-- `Ctrl+l`: preview flutuante
-- `.`: toggle hidden files
+- `>/Enter`: abrir (texto → $EDITOR, binários → xdg-open)
+- `</-`: diretório pai
+- `0/Home`: topo
+- `$/End`: fim
+- `Ctrl+s`: toggle dual panel
+- `Tab`: trocar foco entre painéis
+
+**Busca & Filtro**
+- `/`: busca fuzzy
+- `r`: search & replace em nomes
+- `?`: busca recursiva
+- `\`: tree view
+
+**Operações**
 - `Space`: selecionar
 - `Ctrl+a`: selecionar tudo (toggle)
-- `gd`: drag & drop via ripdrag (arquivo atual ou seleção)
+- `Ctrl+d`: drag & drop (via ripdrag)
+- `n`: novo arquivo/diretório
+- `Y`: duplicar arquivo
+- `D`: deletar arquivo/seleção
+- `x`: cortar para clipboard
+- `y`: copiar para clipboard
+- `p`: colar (paste)
+- `c`: copiar path para clipboard do sistema
+- `F2`: renomear (edit mode)
+- `F3`: preview flutuante
+- `F4`: abrir shell no diretório atual
+- `F5`: refresh
 - `m`: toggle bookmark no diretório atual
-- `'`: abrir lista de bookmarks
+- `b`: abrir lista de bookmarks
+- `.`: toggle hidden files
 - `q`: sair
 
 ### Preview
@@ -118,14 +131,10 @@ src/
 ## Convenções de código
 
 - Arena allocator por frame para alocações temporárias de renderização
-- Pending key system para sequências de teclas (gg, dd, yy)
 - Child windows do libvaxis para clipping de colunas
 - Popups usam `win.child()` com border e `popup.clear()`
 - Commit messages em português
 
 ## Ideias futuras
 
-- ~~**Bookmarks**: salvar diretórios favoritos, navegar rápido (ex: `m` para marcar, `'` para ir)~~ (implementado: m/'/d)
-- ~~**Copiar/mover arquivos**: `cp`/`mv` com seleção múltipla, cut/paste style~~ (implementado: yy/dd/p)
 - **Syntax highlighting no preview**: colorir código por linguagem no popup de preview
-- **Tabs ou split panes**: múltiplos diretórios abertos simultaneamente
