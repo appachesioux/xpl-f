@@ -211,23 +211,35 @@ pub const DirState = struct {
         return ops;
     }
 
-    pub fn apply_edits(self: *DirState) !usize {
+    pub const EditResult = struct {
+        applied: usize,
+        failed: usize,
+    };
+
+    pub fn apply_edits(self: *DirState) !EditResult {
         var ops = try self.collect_edits(self.allocator);
         defer ops.deinit(self.allocator);
 
         var applied: usize = 0;
+        var failed: usize = 0;
         var dir = try std.fs.openDirAbsolute(self.path, .{});
         defer dir.close();
 
         for (ops.items) |op| {
             switch (op) {
                 .rename => |r| {
-                    dir.rename(r.from, r.to) catch continue;
+                    dir.rename(r.from, r.to) catch {
+                        failed += 1;
+                        continue;
+                    };
                     applied += 1;
                 },
                 .delete => |name| {
                     dir.deleteFile(name) catch {
-                        dir.deleteTree(name) catch continue;
+                        dir.deleteTree(name) catch {
+                            failed += 1;
+                            continue;
+                        };
                         applied += 1;
                         continue;
                     };
@@ -240,7 +252,7 @@ pub const DirState = struct {
         defer self.allocator.free(path_copy);
         try self.scan(path_copy);
 
-        return applied;
+        return .{ .applied = applied, .failed = failed };
     }
 };
 

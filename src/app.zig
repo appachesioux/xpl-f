@@ -702,6 +702,7 @@ pub const App = struct {
             };
 
             var applied: usize = 0;
+            var failed: usize = 0;
             var dir = std.fs.openDirAbsolute(self.dir_state.path, .{}) catch |err| {
                 const msg = std.fmt.bufPrint(&self.message_buf, "Error: {s}", .{@errorName(err)}) catch "Error";
                 self.message = msg;
@@ -714,15 +715,17 @@ pub const App = struct {
             for (ops.items) |op| {
                 switch (op) {
                     .rename => |r| {
-                        dir.rename(r.from, r.to) catch continue;
+                        dir.rename(r.from, r.to) catch {
+                            failed += 1;
+                            continue;
+                        };
                         applied += 1;
                     },
                     .delete => |name| {
                         // Try as file first, then as directory tree
                         dir.deleteFile(name) catch {
-                            dir.deleteTree(name) catch |err| {
-                                const msg = std.fmt.bufPrint(&self.message_buf, "Delete failed: {s}", .{@errorName(err)}) catch "Delete failed";
-                                self.message = msg;
+                            dir.deleteTree(name) catch {
+                                failed += 1;
                                 continue;
                             };
                             applied += 1;
@@ -740,7 +743,10 @@ pub const App = struct {
             defer self.allocator.free(path_copy);
             self.dir_state.scan(path_copy) catch {};
 
-            const msg = std.fmt.bufPrint(&self.message_buf, "{d} operation(s) applied", .{applied}) catch "Done";
+            const msg = if (failed > 0)
+                std.fmt.bufPrint(&self.message_buf, "{d} applied, {d} failed", .{ applied, failed }) catch "Done"
+            else
+                std.fmt.bufPrint(&self.message_buf, "{d} operation(s) applied", .{applied}) catch "Done";
             self.message = msg;
             self.mode = .normal;
             self.clamp_cursor();
@@ -1335,7 +1341,12 @@ pub const App = struct {
                         skipped += 1;
                         continue;
                     };
-                    self.delete_path(src_path) catch {};
+                    self.delete_path(src_path) catch {
+                        // Copied but failed to remove source
+                        ok += 1;
+                        skipped += 1;
+                        continue;
+                    };
                 };
                 ok += 1;
             } else {
@@ -1368,7 +1379,7 @@ pub const App = struct {
         }
 
         if (skipped > 0) {
-            const msg = std.fmt.bufPrint(&self.message_buf, "Pasted {d}, skipped {d} (already exist)", .{ ok, skipped }) catch "Done";
+            const msg = std.fmt.bufPrint(&self.message_buf, "Pasted {d}, failed {d}", .{ ok, skipped }) catch "Done";
             self.message = msg;
         } else {
             const msg = std.fmt.bufPrint(&self.message_buf, "Pasted {d} file(s)", .{ok}) catch "Done";
@@ -1525,12 +1536,17 @@ pub const App = struct {
         child.stdin_behavior = .Inherit;
         child.stdout_behavior = .Inherit;
         child.stderr_behavior = .Inherit;
-        _ = child.spawnAndWait() catch {};
+        const shell_result = child.spawnAndWait();
 
         self.tty = Tty.init(&self.tty_buf) catch return;
         self.vx.enterAltScreen(self.tty.writer()) catch {};
         self.loop.start() catch return;
         self.vx.queueRefresh();
+
+        if (shell_result) |_| {} else |_| {
+            const msg = std.fmt.bufPrint(&self.message_buf, "Failed to run: {s}", .{shell}) catch "Shell failed";
+            self.message = msg;
+        }
     }
 
     // ─── DESTINATION PANEL ───
@@ -1670,11 +1686,16 @@ pub const App = struct {
                 child.stdin_behavior = .Inherit;
                 child.stdout_behavior = .Inherit;
                 child.stderr_behavior = .Inherit;
-                _ = child.spawnAndWait() catch {};
+                const editor_result = child.spawnAndWait();
 
                 self.tty = Tty.init(&self.tty_buf) catch return;
                 self.vx.enterAltScreen(self.tty.writer()) catch {};
                 self.loop.start() catch return;
+
+                if (editor_result) |_| {} else |_| {
+                    const msg = std.fmt.bufPrint(&self.message_buf, "Failed to run: {s}", .{editor}) catch "Editor failed";
+                    self.message = msg;
+                }
                 self.vx.queueRefresh();
 
                 const path_copy = self.allocator.dupe(u8, self.dir_state.path) catch return;
@@ -2120,14 +2141,17 @@ pub const App = struct {
         child.stdin_behavior = .Inherit;
         child.stdout_behavior = .Inherit;
         child.stderr_behavior = .Inherit;
-        _ = child.spawnAndWait() catch {
-            // command not found — will restore screen below
-        };
+        const cmd_result = child.spawnAndWait();
 
         self.tty = Tty.init(&self.tty_buf) catch return;
         self.vx.enterAltScreen(self.tty.writer()) catch {};
         self.loop.start() catch return;
         self.vx.queueRefresh();
+
+        if (cmd_result) |_| {} else |_| {
+            const msg = std.fmt.bufPrint(&self.message_buf, "Command failed: {s}", .{cmd}) catch "Command failed";
+            self.message = msg;
+        }
     }
 
 };
