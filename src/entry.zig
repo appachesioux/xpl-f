@@ -17,6 +17,8 @@ pub const FileEntry = struct {
     is_executable: bool,
     selected: bool,
     mode: u32,
+    uid: u32,
+    owner: []const u8,
 
     pub fn get_style(self: FileEntry) vaxis.Style {
         if (self.selected) {

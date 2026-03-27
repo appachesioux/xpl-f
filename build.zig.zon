@@ -1,7 +1,7 @@
 .{
     .fingerprint = 0xbc804b3d08cf6268,
     .name = .xpl_f,
-    .version = "0.5.3",
+    .version = "0.5.4",
     .dependencies = .{
         .vaxis = .{
             .url = "git+https://github.com/rockorager/libvaxis.git#a3ae1d53feeeeaeb6218de3d38837559811acae4",

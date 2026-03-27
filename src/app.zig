@@ -154,6 +154,7 @@ pub const App = struct {
         try self.loop.start();
 
         const writer = self.tty.writer();
+        self.vx.caps.unicode = .unicode;
         try self.vx.enterAltScreen(writer);
 
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -703,6 +704,7 @@ pub const App = struct {
 
             var applied: usize = 0;
             var failed: usize = 0;
+            var last_err: []const u8 = "";
             var dir = std.fs.openDirAbsolute(self.dir_state.path, .{}) catch |err| {
                 const msg = std.fmt.bufPrint(&self.message_buf, "Error: {s}", .{@errorName(err)}) catch "Error";
                 self.message = msg;
@@ -715,8 +717,9 @@ pub const App = struct {
             for (ops.items) |op| {
                 switch (op) {
                     .rename => |r| {
-                        dir.rename(r.from, r.to) catch {
+                        dir.rename(r.from, r.to) catch |err| {
                             failed += 1;
+                            last_err = @errorName(err);
                             continue;
                         };
                         applied += 1;
@@ -724,8 +727,9 @@ pub const App = struct {
                     .delete => |name| {
                         // Try as file first, then as directory tree
                         dir.deleteFile(name) catch {
-                            dir.deleteTree(name) catch {
+                            dir.deleteTree(name) catch |err| {
                                 failed += 1;
+                                last_err = @errorName(err);
                                 continue;
                             };
                             applied += 1;
@@ -744,7 +748,7 @@ pub const App = struct {
             self.dir_state.scan(path_copy) catch {};
 
             const msg = if (failed > 0)
-                std.fmt.bufPrint(&self.message_buf, "{d} applied, {d} failed", .{ applied, failed }) catch "Done"
+                std.fmt.bufPrint(&self.message_buf, "{d} applied, {d} failed ({s})", .{ applied, failed, last_err }) catch "Done"
             else
                 std.fmt.bufPrint(&self.message_buf, "{d} operation(s) applied", .{applied}) catch "Done";
             self.message = msg;
@@ -2125,32 +2129,6 @@ pub const App = struct {
             self.bookmark_scroll = self.bookmark_cursor;
         } else if (self.bookmark_cursor >= self.bookmark_scroll + visible) {
             self.bookmark_scroll = self.bookmark_cursor - visible + 1;
-        }
-    }
-
-    fn run_external(self: *App, cmd: []const u8) void {
-        const cmd_z = self.allocator.dupeZ(u8, cmd) catch return;
-        defer self.allocator.free(cmd_z);
-
-        self.loop.stop();
-        self.vx.exitAltScreen(self.tty.writer()) catch {};
-        self.tty.deinit();
-        _ = std.posix.write(std.posix.STDOUT_FILENO, "\x1b[?25h") catch {};
-
-        var child = std.process.Child.init(&.{cmd_z}, self.allocator);
-        child.stdin_behavior = .Inherit;
-        child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
-        const cmd_result = child.spawnAndWait();
-
-        self.tty = Tty.init(&self.tty_buf) catch return;
-        self.vx.enterAltScreen(self.tty.writer()) catch {};
-        self.loop.start() catch return;
-        self.vx.queueRefresh();
-
-        if (cmd_result) |_| {} else |_| {
-            const msg = std.fmt.bufPrint(&self.message_buf, "Command failed: {s}", .{cmd}) catch "Command failed";
-            self.message = msg;
         }
     }
 

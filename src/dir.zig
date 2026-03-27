@@ -1,4 +1,5 @@
 const std = @import("std");
+const linux = std.os.linux;
 const entry_mod = @import("entry.zig");
 const FileEntry = entry_mod.FileEntry;
 const EntryKind = entry_mod.EntryKind;
@@ -11,6 +12,7 @@ pub const DirState = struct {
     show_hidden: bool,
     search_query: std.ArrayList(u8),
     allocator: std.mem.Allocator,
+    current_uid: u32,
 
     // Edit mode state
     edit_names: std.ArrayList(std.ArrayList(u8)),
@@ -25,6 +27,7 @@ pub const DirState = struct {
             .show_hidden = false,
             .search_query = .{},
             .allocator = allocator,
+            .current_uid = std.posix.getuid(),
             .edit_names = .{},
             .has_edits = false,
         };
@@ -53,25 +56,37 @@ pub const DirState = struct {
         const arena_alloc = self.name_arena.allocator();
         self.path = try arena_alloc.dupe(u8, path);
 
+        var uid_cache = UidCache.init(arena_alloc);
+
         var dir = try std.fs.openDirAbsolute(path, .{ .iterate = true });
         defer dir.close();
 
         var iter = dir.iterate();
         while (try iter.next()) |e| {
-            const name = try arena_alloc.dupe(u8, e.name);
+            const name_z = try arena_alloc.dupeZ(u8, e.name);
+            const name = name_z[0..e.name.len];
 
             var size: u64 = 0;
             var modified: i128 = 0;
             var is_executable = false;
             var mode: u32 = 0;
+            var uid: u32 = 0;
 
-            const stat = dir.statFile(e.name) catch null;
-            if (stat) |s| {
-                size = s.size;
-                modified = s.mtime;
-                is_executable = (s.mode & 0o111) != 0;
-                mode = @intCast(s.mode & 0o7777);
+            var stx = std.mem.zeroes(linux.Statx);
+            const mask = linux.STATX_SIZE | linux.STATX_MODE | linux.STATX_MTIME | linux.STATX_UID;
+            const rc = linux.statx(dir.fd, name_z, 0, mask, &stx);
+            if (linux.E.init(rc) == .SUCCESS) {
+                size = stx.size;
+                modified = @as(i128, stx.mtime.sec) * std.time.ns_per_s + stx.mtime.nsec;
+                is_executable = (stx.mode & 0o111) != 0;
+                mode = @intCast(stx.mode & 0o7777);
+                uid = stx.uid;
             }
+
+            const owner = if (uid != self.current_uid)
+                uid_cache.resolve(uid) catch ""
+            else
+                "";
 
             const kind: EntryKind = switch (e.kind) {
                 .directory => .dir,
@@ -88,6 +103,8 @@ pub const DirState = struct {
                 .is_executable = is_executable,
                 .selected = false,
                 .mode = mode,
+                .uid = uid,
+                .owner = owner,
             });
         }
 
@@ -201,9 +218,7 @@ pub const DirState = struct {
             const original = self.all_entries.items[real_idx].name;
             const edited = self.edit_names.items[i].items;
 
-            if (edited.len == 0) {
-                try ops.append(alloc, .{ .delete = original });
-            } else if (!std.mem.eql(u8, original, edited)) {
+            if (edited.len > 0 and !std.mem.eql(u8, original, edited)) {
                 try ops.append(alloc, .{ .rename = .{ .from = original, .to = edited } });
             }
         }
@@ -211,49 +226,6 @@ pub const DirState = struct {
         return ops;
     }
 
-    pub const EditResult = struct {
-        applied: usize,
-        failed: usize,
-    };
-
-    pub fn apply_edits(self: *DirState) !EditResult {
-        var ops = try self.collect_edits(self.allocator);
-        defer ops.deinit(self.allocator);
-
-        var applied: usize = 0;
-        var failed: usize = 0;
-        var dir = try std.fs.openDirAbsolute(self.path, .{});
-        defer dir.close();
-
-        for (ops.items) |op| {
-            switch (op) {
-                .rename => |r| {
-                    dir.rename(r.from, r.to) catch {
-                        failed += 1;
-                        continue;
-                    };
-                    applied += 1;
-                },
-                .delete => |name| {
-                    dir.deleteFile(name) catch {
-                        dir.deleteTree(name) catch {
-                            failed += 1;
-                            continue;
-                        };
-                        applied += 1;
-                        continue;
-                    };
-                    applied += 1;
-                },
-            }
-        }
-
-        const path_copy = try self.allocator.dupe(u8, self.path);
-        defer self.allocator.free(path_copy);
-        try self.scan(path_copy);
-
-        return .{ .applied = applied, .failed = failed };
-    }
 };
 
 pub fn recursive_walk(
@@ -313,6 +285,51 @@ pub fn recursive_walk(
 pub fn fuzzy_match_pub(name: []const u8, query: []const u8) bool {
     return fuzzy_match(name, query);
 }
+
+const UidCache = struct {
+    map: std.AutoHashMapUnmanaged(u32, []const u8),
+    alloc: std.mem.Allocator,
+    passwd_loaded: bool,
+    passwd_buf: ?[]const u8,
+
+    fn init(alloc: std.mem.Allocator) UidCache {
+        return .{
+            .map = .{},
+            .alloc = alloc,
+            .passwd_loaded = false,
+            .passwd_buf = null,
+        };
+    }
+
+    fn load_passwd(self: *UidCache) void {
+        if (self.passwd_loaded) return;
+        self.passwd_loaded = true;
+
+        const file = std.fs.openFileAbsolute("/etc/passwd", .{}) catch return;
+        defer file.close();
+
+        const content = file.readToEndAlloc(self.alloc, 1024 * 1024) catch return;
+        self.passwd_buf = content;
+
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            var fields = std.mem.splitScalar(u8, line, ':');
+            const name = fields.next() orelse continue;
+            _ = fields.next(); // password
+            const uid_str = fields.next() orelse continue;
+            const uid = std.fmt.parseInt(u32, uid_str, 10) catch continue;
+            self.map.put(self.alloc, uid, name) catch continue;
+        }
+    }
+
+    fn resolve(self: *UidCache, uid: u32) ![]const u8 {
+        self.load_passwd();
+        if (self.map.get(uid)) |name| return name;
+        const fallback = try std.fmt.allocPrint(self.alloc, "{d}", .{uid});
+        self.map.put(self.alloc, uid, fallback) catch {};
+        return fallback;
+    }
+};
 
 fn fuzzy_match(name: []const u8, query: []const u8) bool {
     if (query.len > name.len) return false;

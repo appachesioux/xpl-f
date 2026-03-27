@@ -24,10 +24,6 @@ pub const executable_style: Style = .{
 };
 
 // --- UI elements ---
-pub const cursor_style: Style = .{
-    .reverse = true,
-};
-
 pub const selected_style: Style = .{
     .bg = .{ .rgb = .{ 60, 60, 80 } },
 };
@@ -116,4 +112,3 @@ pub const preview_text_style: Style = .{
 pub const icon_dir = "";
 pub const icon_file = "";
 pub const icon_symlink = "";
-pub const icon_parent = "";

@@ -54,6 +54,7 @@ pub const DestPanelState = struct {
 // Fixed column widths (right-aligned columns); Name takes the rest
 const SIZE_W: usize = 10; // "  1.2M  "
 const PERM_W: usize = 15; // " 755 rwxr-xr-x "
+const OWNER_W: usize = 10; // " root     "
 const DATE_W: usize = 18; // " 2026-03-18 14:30 "
 
 // Vertical layout: blank row, top separator, header, separator, then entries
@@ -203,7 +204,7 @@ pub fn draw(
     // Layout: rows 0..ENTRIES_ROW = blank/header/separator, then entries, last row = status
     const list_height = if (inner_h > ROWS_BEFORE_ENTRIES + 1) inner_h - ROWS_BEFORE_ENTRIES - 1 else return;
 
-    const right_cols = SIZE_W + PERM_W + DATE_W;
+    const right_cols = SIZE_W + PERM_W + OWNER_W + DATE_W;
     const name_w = if (inner_w > right_cols + 10) inner_w - right_cols else 10;
 
     // Draw top separator (shared by both views)
@@ -281,7 +282,6 @@ fn draw_title(alloc: std.mem.Allocator, win: Window, path: []const u8, width: us
 
     _ = win.printSegment(.{
         .text = title,
-        // .style = style.title_style,
         .style = style.confirm_border_style,
     }, .{
         .row_offset = 0,
@@ -297,7 +297,6 @@ fn draw_version(alloc: std.mem.Allocator, win: Window, width: usize) void {
 
     _ = win.printSegment(.{
         .text = label,
-        // .style = style.title_style,
         .style = style.confirm_border_style,
     }, .{
         .row_offset = 0,
@@ -323,7 +322,8 @@ fn draw_header(win: Window, width: usize, name_w: usize) void {
     const cols = [_]struct { off: usize, label: []const u8 }{
         .{ .off = name_w, .label = " Size" },
         .{ .off = name_w + SIZE_W, .label = " Perms" },
-        .{ .off = name_w + SIZE_W + PERM_W, .label = " Modified" },
+        .{ .off = name_w + SIZE_W + PERM_W, .label = " Owner" },
+        .{ .off = name_w + SIZE_W + PERM_W + OWNER_W, .label = " Modified" },
     };
 
     for (cols) |col| {
@@ -342,7 +342,7 @@ fn draw_header(win: Window, width: usize, name_w: usize) void {
 
 fn draw_top_separator(win: Window, width: usize, name_w: usize) void {
     for (0..width) |x| {
-        const is_cross = x == name_w - 1 or x == name_w + SIZE_W - 1 or x == name_w + SIZE_W + PERM_W - 1;
+        const is_cross = x == name_w - 1 or x == name_w + SIZE_W - 1 or x == name_w + SIZE_W + PERM_W - 1 or x == name_w + SIZE_W + PERM_W + OWNER_W - 1;
         const glyph: []const u8 = if (is_cross) "┬" else "─";
         const s = if (is_cross) style.border_style else style.dim_style;
         win.writeCell(@intCast(x), TOP_SEPARATOR_ROW, .{
@@ -354,7 +354,7 @@ fn draw_top_separator(win: Window, width: usize, name_w: usize) void {
 
 fn draw_header_separator(win: Window, width: usize, name_w: usize) void {
     for (0..width) |x| {
-        const is_cross = x == name_w - 1 or x == name_w + SIZE_W - 1 or x == name_w + SIZE_W + PERM_W - 1;
+        const is_cross = x == name_w - 1 or x == name_w + SIZE_W - 1 or x == name_w + SIZE_W + PERM_W - 1 or x == name_w + SIZE_W + PERM_W + OWNER_W - 1;
         const glyph: []const u8 = if (is_cross) "┼" else "─";
         const s = if (is_cross) style.border_style else style.dim_style;
         win.writeCell(@intCast(x), SEPARATOR_ROW, .{
@@ -419,6 +419,26 @@ fn draw_tree_view(alloc: std.mem.Allocator, win: Window, width: usize, height: u
     }
 }
 
+/// Like printSegment but never lets a wide character overflow beyond the window width.
+/// Standard printSegment writes a width-2 char even at the last column, causing it to
+/// visually bleed into adjacent columns.
+fn printClipped(win: Window, text: []const u8, s: vaxis.Style, col_offset: u16) void {
+    var col = col_offset;
+    var iter = vaxis.unicode.GraphemeIterator.init(text);
+    while (iter.next()) |grapheme| {
+        const bytes = grapheme.bytes(text);
+        if (std.mem.eql(u8, bytes, "\n")) break;
+        const w: u16 = @intCast(win.gwidth(bytes));
+        if (w == 0) continue;
+        if (col + w > win.width) break;
+        win.writeCell(col, 0, .{
+            .char = .{ .grapheme = bytes, .width = @intCast(w) },
+            .style = s,
+        });
+        col += w;
+    }
+}
+
 fn draw_entries(
     alloc: std.mem.Allocator,
     win: Window,
@@ -471,18 +491,12 @@ fn draw_entries(
         if (current_mode == .edit or current_mode == .replace) {
             if (dir_state.get_edit_name(idx)) |edit_name| {
                 if (edit_name.len == 0) {
-                    _ = name_col.printSegment(.{
-                        .text = "  [deleted]",
-                        .style = style.error_style,
-                    }, .{});
+                    printClipped(name_col, "  [deleted]", style.error_style, 0);
                 } else {
                     const name_changed = current_mode == .replace and !std.mem.eql(u8, e.name, edit_name);
                     const display_style = if (name_changed) style.replace_match_style else entry_style;
                     const edit_text = std.fmt.allocPrint(alloc, "  {s}", .{edit_name}) catch edit_name;
-                    _ = name_col.printSegment(.{
-                        .text = edit_text,
-                        .style = display_style,
-                    }, .{});
+                    printClipped(name_col, edit_text, display_style, 0);
                 }
             }
             if (current_mode == .edit and is_cursor) {
@@ -496,10 +510,7 @@ fn draw_entries(
             const indicator: []const u8 = if (is_cursor) ">" else " ";
             const icon = e.get_icon();
             const full_name = std.fmt.allocPrint(alloc, "{s} {s}{s}", .{ indicator, icon, display_name }) catch display_name;
-            _ = name_col.printSegment(.{
-                .text = full_name,
-                .style = entry_style,
-            }, .{});
+            printClipped(name_col, full_name, entry_style, 0);
         }
 
         // Vertical separator before Size
@@ -510,10 +521,11 @@ fn draw_entries(
             });
         }
 
-        // --- Right-aligned fixed columns: Size, Perms, Date ---
+        // --- Right-aligned fixed columns: Size, Perms, Owner, Date ---
         const size_start = name_w;
         const perm_start = name_w + SIZE_W;
-        const date_start = name_w + SIZE_W + PERM_W;
+        const owner_start = name_w + SIZE_W + PERM_W;
+        const date_start = name_w + SIZE_W + PERM_W + OWNER_W;
 
         // Size column
         const size_col = win.child(.{
@@ -544,6 +556,23 @@ fn draw_entries(
         const perm_str = e.format_perms(perm_buf);
         _ = perm_col.printSegment(.{ .text = " ", .style = entry_style }, .{});
         _ = perm_col.printSegment(.{ .text = perm_str, .style = entry_style }, .{ .col_offset = 1 });
+
+        // Separator before Owner
+        win.writeCell(@intCast(owner_start - 1), display_row, .{
+            .char = .{ .grapheme = "│", .width = 1 },
+            .style = style.border_style,
+        });
+
+        // Owner column (only shows when different from current user)
+        const owner_col = win.child(.{
+            .x_off = @intCast(owner_start),
+            .y_off = @intCast(display_row),
+            .width = OWNER_W,
+            .height = 1,
+        });
+        if (e.owner.len > 0) {
+            _ = owner_col.printSegment(.{ .text = e.owner, .style = entry_style }, .{ .col_offset = 1 });
+        }
 
         // Separator before Date
         win.writeCell(@intCast(date_start - 1), display_row, .{
@@ -1065,91 +1094,6 @@ fn draw_find_inline(alloc: std.mem.Allocator, win: Window, width: usize, list_he
             .style = entry_style,
         }, .{ .row_offset = display_row, .col_offset = 0 });
     }
-}
-
-fn draw_find(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, fs: FindState) void {
-    const popup_w: u16 = @intCast(@max(@min(total_w *| 4 / 5, total_w -| 4), 30));
-    const popup_h: u16 = @intCast(@max(@min(total_h *| 4 / 5, total_h -| 4), 8));
-    if (popup_w < 20 or popup_h < 6) return;
-
-    const x_off: i17 = @intCast((total_w - popup_w) / 2);
-    const y_off: i17 = @intCast((total_h - popup_h) / 2);
-
-    const popup = win.child(.{
-        .x_off = x_off,
-        .y_off = y_off,
-        .width = popup_w,
-        .height = popup_h,
-        .border = .{
-            .where = .all,
-            .glyphs = .single_rounded,
-            .style = style.confirm_border_style,
-        },
-    });
-
-    popup.clear();
-
-    const inner_w = if (popup.width > 0) popup.width else return;
-    const inner_h = if (popup.height > 0) popup.height else return;
-
-    // Search input line
-    const query_text = std.fmt.allocPrint(alloc, " find: {s}", .{fs.query}) catch return;
-    _ = popup.printSegment(.{
-        .text = query_text,
-        .style = style.title_style,
-    }, .{ .row_offset = 0, .col_offset = 0 });
-
-    // Show cursor
-    const cursor_col: u16 = @intCast(@as(i17, x_off) + 1 + @as(i17, @intCast(query_text.len)));
-    const cursor_row: u16 = @intCast(@as(i17, y_off) + 1);
-    win.showCursor(cursor_col, cursor_row);
-
-    // Result count
-    const count_text = std.fmt.allocPrint(alloc, " {d}/{d}", .{ fs.filtered.len, fs.results.items.len }) catch return;
-    const count_col: u16 = @intCast(inner_w -| count_text.len);
-    _ = popup.printSegment(.{
-        .text = count_text,
-        .style = style.dim_style,
-    }, .{ .row_offset = 0, .col_offset = count_col });
-
-    // Results list
-    const list_h = inner_h -| 2; // reserve row 0 for query, last row for hints
-    var row: usize = 0;
-    var idx = fs.scroll;
-    while (row < list_h and idx < fs.filtered.len) : ({
-        row += 1;
-        idx += 1;
-    }) {
-        const real_idx = fs.filtered[idx];
-        const path = fs.results.items[real_idx];
-        const display_row: u16 = @intCast(row + 1);
-        const is_cursor = idx == fs.cursor;
-
-        // Highlight cursor line
-        if (is_cursor) {
-            for (0..inner_w) |x| {
-                popup.writeCell(@intCast(x), display_row, .{
-                    .char = .{ .grapheme = " ", .width = 1 },
-                    .style = .{ .reverse = true },
-                });
-            }
-        }
-
-        const indicator: []const u8 = if (is_cursor) " > " else "   ";
-        const line = std.fmt.allocPrint(alloc, "{s}{s}", .{ indicator, path }) catch continue;
-        const entry_style: vaxis.Style = if (is_cursor) .{ .reverse = true } else style.file_style;
-        _ = popup.printSegment(.{
-            .text = line,
-            .style = entry_style,
-        }, .{ .row_offset = display_row, .col_offset = 0 });
-    }
-
-    // Hints at the bottom
-    const hint_row: u16 = @intCast(inner_h -| 1);
-    _ = popup.printSegment(.{
-        .text = "j/k=Navigate  Enter=Go  Esc=Cancel",
-        .style = style.dim_style,
-    }, .{ .row_offset = hint_row, .col_offset = 1 });
 }
 
 fn draw_bookmarks(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, bs: BookmarkState) void {
