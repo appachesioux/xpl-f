@@ -4,13 +4,16 @@ const dir_mod = @import("dir.zig");
 const mode_mod = @import("mode.zig");
 const render = @import("render.zig");
 const style = @import("style.zig");
+const scanner_mod = @import("scanner.zig");
 
 const Vaxis = vaxis.Vaxis;
 const Tty = vaxis.Tty;
 
-const Event = union(enum) {
+pub const Event = union(enum) {
     key_press: vaxis.Key,
     winsize: vaxis.Winsize,
+    scan_complete: scanner_mod.ScanResult,
+    find_batch: scanner_mod.FindBatchResult,
 };
 
 pub const App = struct {
@@ -63,9 +66,11 @@ pub const App = struct {
     find_cursor: usize,
     find_scroll: usize,
     find_arena: std.heap.ArenaAllocator,
+    find_batch_arenas: std.ArrayList(std.heap.ArenaAllocator),
     find_saved_path: ?[]const u8,
     find_saved_cursor: usize,
     find_saved_scroll: usize,
+    find_walking: bool,
 
     // Bookmark mode
     bookmarks: std.ArrayList([]const u8),
@@ -84,6 +89,11 @@ pub const App = struct {
     dest_state: dir_mod.DirState,
     dest_cursor: usize,
     dest_scroll: usize,
+
+    // Async scanner
+    scanner: scanner_mod.Scanner,
+    is_scanning: bool,
+    scan_generation: u64,
 
     should_quit: bool,
 
@@ -126,9 +136,11 @@ pub const App = struct {
             .find_cursor = 0,
             .find_scroll = 0,
             .find_arena = std.heap.ArenaAllocator.init(allocator),
+            .find_batch_arenas = .{},
             .find_saved_path = null,
             .find_saved_cursor = 0,
             .find_saved_scroll = 0,
+            .find_walking = false,
             .bookmarks = .{},
             .bookmark_cursor = 0,
             .bookmark_scroll = 0,
@@ -141,6 +153,9 @@ pub const App = struct {
             .dest_state = dir_mod.DirState.init(allocator),
             .dest_cursor = 0,
             .dest_scroll = 0,
+            .scanner = undefined, // initialized after loop
+            .is_scanning = false,
+            .scan_generation = 0,
             .should_quit = false,
         };
 
@@ -152,6 +167,8 @@ pub const App = struct {
         self.loop = .{ .vaxis = &self.vx, .tty = &self.tty };
         try self.loop.init();
         try self.loop.start();
+
+        self.scanner = scanner_mod.Scanner.init(allocator, &self.loop);
 
         const writer = self.tty.writer();
         self.vx.caps.unicode = .unicode;
@@ -181,9 +198,12 @@ pub const App = struct {
         self.find_buf.deinit(self.allocator);
         self.find_all_paths.deinit(self.allocator);
         self.find_filtered.deinit(self.allocator);
+        self.free_find_arenas();
+        self.find_batch_arenas.deinit(self.allocator);
         self.find_arena.deinit();
         self.free_bookmarks();
         self.bookmarks.deinit(self.allocator);
+        self.scanner.deinit();
         self.frame_arena.deinit();
         self.dir_state.deinit();
         self.dest_state.deinit();
@@ -206,6 +226,12 @@ pub const App = struct {
     fn update(self: *App, event: Event) !void {
         switch (event) {
             .winsize => |ws| try self.vx.resize(self.allocator, self.tty.writer(), ws),
+            .scan_complete => |result| {
+                self.handleScanComplete(result);
+            },
+            .find_batch => |result| {
+                self.handleFindBatch(result);
+            },
             .key_press => |key| {
                 self.message = null;
                 switch (self.mode) {
@@ -254,6 +280,7 @@ pub const App = struct {
             .filtered = self.find_filtered.items,
             .cursor = self.find_cursor,
             .scroll = self.find_scroll,
+            .is_walking = self.find_walking,
         } else null;
 
         const bookmark_state: ?render.BookmarkState = if (self.mode == .bookmark) .{
@@ -295,11 +322,106 @@ pub const App = struct {
             bookmark_state,
             tree_view_state,
             dest_panel_state,
+            self.is_scanning,
         );
 
         if (self.mode != .edit and self.mode != .replace and self.mode != .create) {
             win.hideCursor();
         }
+    }
+
+    // ─── ASYNC SCAN ───
+
+    fn requestScanAsync(self: *App, path: []const u8, target: scanner_mod.ScanTarget) void {
+        self.is_scanning = true;
+        self.scan_generation +%= 1;
+        self.scanner.requestScan(
+            path,
+            target,
+            self.dir_state.current_uid,
+            if (target == .main) self.dir_state.show_hidden else self.dest_state.show_hidden,
+        );
+    }
+
+    fn handleScanComplete(self: *App, result: scanner_mod.ScanResult) void {
+        // Discard stale results
+        if (result.generation != self.scanner.generation.load(.seq_cst)) {
+            var arena = result.name_arena;
+            arena.deinit();
+            var entries = result.all_entries;
+            entries.deinit(self.allocator);
+            return;
+        }
+
+        const target_state = if (result.target == .main) &self.dir_state else &self.dest_state;
+        target_state.acceptScanResult(result) catch {};
+        self.is_scanning = false;
+
+        if (result.target == .main) {
+            self.clamp_cursor();
+        } else {
+            const dest_count = self.dest_state.entry_count();
+            if (self.dest_cursor >= dest_count) {
+                self.dest_cursor = if (dest_count > 0) dest_count - 1 else 0;
+            }
+        }
+    }
+
+    fn handleFindBatch(self: *App, result: scanner_mod.FindBatchResult) void {
+        // Discard stale batches
+        if (result.generation != self.scanner.find_generation.load(.seq_cst)) {
+            var arena = result.arena;
+            arena.deinit();
+            var paths = result.paths;
+            paths.deinit(self.allocator);
+            return;
+        }
+
+        // Ignore if not in find mode anymore
+        if (self.mode != .find) {
+            var arena = result.arena;
+            arena.deinit();
+            var paths = result.paths;
+            paths.deinit(self.allocator);
+            return;
+        }
+
+        // Append paths to find_all_paths
+        const prev_len = self.find_all_paths.items.len;
+        for (result.paths.items) |path| {
+            self.find_all_paths.append(self.allocator, path) catch continue;
+        }
+
+        // Keep the arena alive (owns the path strings)
+        self.find_batch_arenas.append(self.allocator, result.arena) catch {};
+
+        // Free the paths ArrayList (not the strings, those live in the arena)
+        var paths = result.paths;
+        paths.deinit(self.allocator);
+
+        // Update filtered list for new entries
+        if (self.find_buf.items.len == 0) {
+            for (prev_len..self.find_all_paths.items.len) |i| {
+                self.find_filtered.append(self.allocator, i) catch continue;
+            }
+        } else {
+            for (self.find_all_paths.items[prev_len..], prev_len..) |path, i| {
+                if (dir_mod.fuzzy_match_pub(path, self.find_buf.items)) {
+                    self.find_filtered.append(self.allocator, i) catch continue;
+                }
+            }
+        }
+
+        if (result.is_final) {
+            self.find_walking = false;
+        }
+    }
+
+    fn free_find_arenas(self: *App) void {
+        for (self.find_batch_arenas.items) |*arena| {
+            arena.deinit();
+        }
+        self.find_batch_arenas.clearRetainingCapacity();
     }
 
     // ─── NORMAL MODE ───
@@ -333,7 +455,7 @@ pub const App = struct {
         if (key.matches('s', .{ .ctrl = true })) {
             if (!self.dual_panel) {
                 // Open destination panel with same directory
-                try self.dest_state.scan(self.dir_state.path);
+                self.requestScanAsync(self.dir_state.path, .dest);
                 self.dest_cursor = 0;
                 self.dest_scroll = 0;
                 self.dual_panel = true;
@@ -422,11 +544,7 @@ pub const App = struct {
         } else if (key.matches(vaxis.Key.f4, .{})) {
             self.open_shell();
         } else if (key.matches(vaxis.Key.f5, .{})) {
-            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const path_copy = path_buf[0..self.dir_state.path.len];
-            @memcpy(path_copy, self.dir_state.path);
-            try self.dir_state.scan(path_copy);
-            self.clamp_cursor();
+            self.requestScanAsync(self.dir_state.path, .main);
         } else if (key.matches('r', .{})) {
             try self.enter_replace_mode();
         } else if (key.matches('n', .{})) {
@@ -797,6 +915,7 @@ pub const App = struct {
         self.find_buf.clearRetainingCapacity();
         self.find_all_paths.clearRetainingCapacity();
         self.find_filtered.clearRetainingCapacity();
+        self.free_find_arenas();
         _ = self.find_arena.reset(.retain_capacity);
 
         // Salva estado atual para restaurar no Escape (copia path no find_arena)
@@ -806,26 +925,25 @@ pub const App = struct {
         self.find_saved_scroll = self.scroll_offset;
         self.find_cursor = 0;
         self.find_scroll = 0;
+        self.find_walking = true;
 
-        // Walk the current directory recursively
-        self.find_all_paths = try dir_mod.recursive_walk(
-            self.allocator,
-            &self.find_arena,
+        // Start async recursive walk
+        self.scanner.requestFind(
             self.dir_state.path,
             self.dir_state.show_hidden,
             10000,
         );
-
-        // Initially all results are visible
-        for (0..self.find_all_paths.items.len) |i| {
-            try self.find_filtered.append(self.allocator, i);
-        }
 
         self.mode = .find;
     }
 
     fn handle_find(self: *App, key: vaxis.Key) !void {
         if (key.matches(vaxis.Key.escape, .{})) {
+            // Cancel walk if still running
+            if (self.find_walking) {
+                self.scanner.cancelFind();
+                self.find_walking = false;
+            }
             // Restaura estado anterior ao find
             if (self.find_saved_path) |saved_path| {
                 if (!std.mem.eql(u8, saved_path, self.dir_state.path)) {
@@ -912,6 +1030,12 @@ pub const App = struct {
     }
 
     fn find_navigate(self: *App) !void {
+        // Cancel walk if still running
+        if (self.find_walking) {
+            self.scanner.cancelFind();
+            self.find_walking = false;
+        }
+
         if (self.find_filtered.items.len == 0) {
             self.mode = .normal;
             return;
@@ -1576,7 +1700,7 @@ pub const App = struct {
                 const new_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ self.dest_state.path, entry.name }) catch return;
                 var real_buf: [std.fs.max_path_bytes]u8 = undefined;
                 const resolved = std.fs.cwd().realpath(new_path, &real_buf) catch new_path;
-                try self.dest_state.scan(resolved);
+                self.requestScanAsync(resolved, .dest);
                 self.dest_cursor = 0;
                 self.dest_scroll = 0;
             }
@@ -1649,7 +1773,7 @@ pub const App = struct {
             var real_buf: [std.fs.max_path_bytes]u8 = undefined;
             const resolved = std.fs.cwd().realpath(new_path, &real_buf) catch new_path;
 
-            try self.dir_state.scan(resolved);
+            self.requestScanAsync(resolved, .main);
             self.cursor = 0;
             self.scroll_offset = 0;
             if (self.show_tree) {
@@ -1701,10 +1825,7 @@ pub const App = struct {
                     self.message = msg;
                 }
                 self.vx.queueRefresh();
-
-                const path_copy = self.allocator.dupe(u8, self.dir_state.path) catch return;
-                defer self.allocator.free(path_copy);
-                self.dir_state.scan(path_copy) catch {};
+                self.requestScanAsync(self.dir_state.path, .main);
             }
         }
     }
@@ -2099,7 +2220,7 @@ pub const App = struct {
             return;
         };
 
-        try self.dir_state.scan(path);
+        self.requestScanAsync(path, .main);
         self.cursor = 0;
         self.scroll_offset = 0;
         self.mode = .normal;

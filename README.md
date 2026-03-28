@@ -51,13 +51,14 @@ man xpl-f
 
 ```
 src/
-├── main.zig    # Entry point, parse de args, cria App
-├── app.zig     # Core: event loop, input handlers, estado da aplicação
-├── render.zig  # Renderização: main window, popups (help, confirm, replace, preview)
-├── dir.zig     # Estado do diretório: scan, filtro, edit mode, operações de rename/delete
-├── entry.zig   # FileEntry: tipo, ícone, estilo, formatação de size/date, ordenação
-├── mode.zig    # Enums: Mode, PendingKey, ReplaceField
-└── style.zig   # Paleta de cores (Catppuccin-like), ícones
+├── main.zig     # Entry point, parse de args, cria App
+├── app.zig      # Core: event loop, input handlers, estado da aplicação
+├── render.zig   # Renderização: main window, popups (help, confirm, replace, preview)
+├── dir.zig      # Estado do diretório: scan síncrono, filtro, edit mode, operações
+├── scanner.zig  # Scan assíncrono: background threads, find progressivo, generation counter
+├── entry.zig    # FileEntry: tipo, ícone, estilo, formatação de size/date, ordenação
+├── mode.zig     # Enums: Mode, PendingKey, ReplaceField
+└── style.zig    # Paleta de cores (Catppuccin-like), ícones
 ```
 
 ### Fluxo principal
@@ -138,3 +139,8 @@ src/
 ## Ideias futuras
 
 - **Syntax highlighting no preview**: colorir código por linguagem no popup de preview
+- **Two-stage loading (Fase 2)**: listar nomes+kind instantaneamente (sem `statx`), renderizar de imediato, e preencher metadata (size, date, permissions) em batches progressivos no background — útil para NFS, HDD lento ou diretórios com dezenas de milhares de arquivos
+- **Cache de diretório com inotify**: manter cache de diretórios visitados e invalidar via `inotify`, evitando re-scan ao navegar de volta
+- **getdents64 direto**: substituir `std.fs.Dir.iterate()` por syscall `getdents64` direta para travessia ainda mais rápida
+- **Pre-fetch de diretórios adjacentes**: carregar em background o conteúdo do diretório sob o cursor, para navegação instantânea ao pressionar Enter
+

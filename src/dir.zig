@@ -3,6 +3,7 @@ const linux = std.os.linux;
 const entry_mod = @import("entry.zig");
 const FileEntry = entry_mod.FileEntry;
 const EntryKind = entry_mod.EntryKind;
+const scanner_mod = @import("scanner.zig");
 
 pub const DirState = struct {
     path: []const u8,
@@ -126,6 +127,20 @@ pub const DirState = struct {
             }
             try self.filtered_entries.append(self.allocator, i);
         }
+    }
+
+    pub fn acceptScanResult(self: *DirState, result: scanner_mod.ScanResult) !void {
+        // Free old data
+        self.all_entries.deinit(self.allocator);
+        self.name_arena.deinit();
+
+        // Take ownership of result's arena and entries
+        self.name_arena = result.name_arena;
+        self.all_entries = result.all_entries;
+        self.path = result.path;
+
+        // Re-apply filter with current show_hidden/search_query
+        try self.apply_filter();
     }
 
     pub fn toggle_hidden(self: *DirState) !void {
@@ -286,13 +301,13 @@ pub fn fuzzy_match_pub(name: []const u8, query: []const u8) bool {
     return fuzzy_match(name, query);
 }
 
-const UidCache = struct {
+pub const UidCache = struct {
     map: std.AutoHashMapUnmanaged(u32, []const u8),
     alloc: std.mem.Allocator,
     passwd_loaded: bool,
     passwd_buf: ?[]const u8,
 
-    fn init(alloc: std.mem.Allocator) UidCache {
+    pub fn init(alloc: std.mem.Allocator) UidCache {
         return .{
             .map = .{},
             .alloc = alloc,
@@ -322,7 +337,7 @@ const UidCache = struct {
         }
     }
 
-    fn resolve(self: *UidCache, uid: u32) ![]const u8 {
+    pub fn resolve(self: *UidCache, uid: u32) ![]const u8 {
         self.load_passwd();
         if (self.map.get(uid)) |name| return name;
         const fallback = try std.fmt.allocPrint(self.alloc, "{d}", .{uid});

@@ -21,6 +21,7 @@ pub const FindState = struct {
     filtered: []const usize,
     cursor: usize,
     scroll: usize,
+    is_walking: bool,
 };
 
 pub const BookmarkState = struct {
@@ -167,6 +168,7 @@ pub fn draw(
     bookmark_state: ?BookmarkState,
     tree_view_state: ?TreeViewState,
     dest_panel: ?DestPanelState,
+    is_scanning: bool,
 ) void {
     const width = win.width;
     const height = win.height;
@@ -229,7 +231,7 @@ pub fn draw(
     }
 
     // Draw status bar
-    draw_status(alloc, main, inner_w, inner_h, current_mode, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf, find_state, tree_view_state);
+    draw_status(alloc, main, inner_w, inner_h, current_mode, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf, find_state, tree_view_state, is_scanning);
 
     // Draw confirm popup if in confirm mode
     if (current_mode == .confirm) {
@@ -612,6 +614,7 @@ fn draw_status(
     create_buf: []const u8,
     find_state: ?FindState,
     tree_view_state: ?TreeViewState,
+    is_scanning: bool,
 ) void {
     const status_row: u16 = @intCast(height -| 1);
 
@@ -717,7 +720,8 @@ fn draw_status(
         }, .{ .row_offset = status_row, .col_offset = hint_col });
     } else if (current_mode == .find) {
         if (find_state) |fs| {
-            const right_text = std.fmt.allocPrint(alloc, " {d}/{d} ", .{ fs.filtered.len, fs.results.items.len }) catch return;
+            const walking_indicator: []const u8 = if (fs.is_walking) "..." else "";
+            const right_text = std.fmt.allocPrint(alloc, " {d}/{d}{s} ", .{ fs.filtered.len, fs.results.items.len, walking_indicator }) catch return;
             const hint_col: u16 = @intCast(width -| right_text.len);
             _ = win.printSegment(.{
                 .text = right_text,
@@ -736,6 +740,16 @@ fn draw_status(
             .text = right_text,
             .style = style.status_normal_style,
         }, .{ .row_offset = status_row, .col_offset = hint_col });
+    }
+
+    // Scanning indicator
+    if (is_scanning) {
+        const scan_text = " [scanning] ";
+        const scan_col: u16 = @intCast(width / 2 -| scan_text.len / 2);
+        _ = win.printSegment(.{
+            .text = scan_text,
+            .style = style.status_edit_style,
+        }, .{ .row_offset = status_row, .col_offset = scan_col });
     }
 }
 
