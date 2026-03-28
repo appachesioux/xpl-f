@@ -109,6 +109,6 @@ pub const preview_text_style: Style = .{
 };
 
 // --- Icons ---
-pub const icon_dir = "";
-pub const icon_file = "";
-pub const icon_symlink = "";
+pub const icon_dir = "\u{f07b} ";
+pub const icon_file = "\u{f15b} ";
+pub const icon_symlink = "\u{f481} ";

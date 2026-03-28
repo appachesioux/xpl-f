@@ -278,7 +278,7 @@ fn draw_title(alloc: std.mem.Allocator, win: Window, path: []const u8, width: us
     const max_path = width - 4;
     const display_path = if (path.len > max_path) path[path.len - max_path ..] else path;
 
-    const title = std.fmt.allocPrint(alloc, " {s} ", .{display_path}) catch return;
+    const title = std.fmt.allocPrint(alloc, " \u{f07b} {s} ", .{display_path}) catch return;
 
     _ = win.printSegment(.{
         .text = title,
