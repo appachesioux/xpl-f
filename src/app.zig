@@ -1369,14 +1369,16 @@ pub const App = struct {
         self.clear_clipboard();
         self.clip_op = op;
 
-        const has_sel = self.dir_state.has_selection();
+        const state = if (self.dual_panel and self.dest_active) &self.dest_state else &self.dir_state;
+        const cur = if (self.dual_panel and self.dest_active) self.dest_cursor else self.cursor;
+        const has_sel = state.has_selection();
 
         if (has_sel) {
             var count: usize = 0;
-            for (self.dir_state.filtered_entries.items) |real_idx| {
-                const e = self.dir_state.all_entries.items[real_idx];
+            for (state.filtered_entries.items) |real_idx| {
+                const e = state.all_entries.items[real_idx];
                 if (!e.selected) continue;
-                const full = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.dir_state.path, e.name }) catch continue;
+                const full = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ state.path, e.name }) catch continue;
                 self.clip_entries.append(self.allocator, full) catch {
                     self.allocator.free(full);
                     continue;
@@ -1387,10 +1389,10 @@ pub const App = struct {
             const msg = std.fmt.bufPrint(&self.message_buf, "{s} {d} file(s)", .{ verb, count }) catch return;
             self.message = msg;
             // Clear selection
-            for (self.dir_state.all_entries.items) |*e| e.selected = false;
+            for (state.all_entries.items) |*e| e.selected = false;
         } else {
-            const e = self.dir_state.get_entry(self.cursor) orelse return;
-            const full = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.dir_state.path, e.name }) catch return;
+            const e = state.get_entry(cur) orelse return;
+            const full = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ state.path, e.name }) catch return;
             self.clip_entries.append(self.allocator, full) catch {
                 self.allocator.free(full);
                 return;
@@ -1449,7 +1451,7 @@ pub const App = struct {
                 continue;
             };
             var dst_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const paste_dir = if (self.dual_panel) self.dest_state.path else self.dir_state.path;
+            const paste_dir = if (self.dual_panel and self.dest_active) self.dest_state.path else self.dir_state.path;
             const dst_path = resolve_available_path(paste_dir, basename, src_stat.kind == .directory, &dst_buf) orelse {
                 skipped += 1;
                 continue;
@@ -1748,6 +1750,8 @@ pub const App = struct {
             self.dest_scroll = 0;
         } else if (key.matches('p', .{})) {
             try self.paste();
+        } else if (key.matches('y', .{})) {
+            self.clip_to_clipboard(.copy);
         } else if (key.matches('q', .{})) {
             self.should_quit = true;
         }
