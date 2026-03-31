@@ -62,6 +62,15 @@ pub fn main() !void {
         break :blk arg;
     };
 
+    // Validate path before initializing terminal to avoid corrupting the screen on error
+    if (initial_dir) |dir| {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        _ = std.fs.cwd().realpath(dir, &path_buf) catch {
+            _ = std.posix.write(std.posix.STDERR_FILENO, "xpl-f: not a valid path or bookmark alias\n") catch {};
+            std.process.exit(1);
+        };
+    }
+
     const app = try App.init(allocator, initial_dir);
     defer app.deinit();
 
