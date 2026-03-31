@@ -6,6 +6,7 @@ const mode_mod = @import("mode.zig");
 const dir_mod = @import("dir.zig");
 const entry_mod = @import("entry.zig");
 const utils = @import("utils.zig");
+const Bookmark = @import("app.zig").Bookmark;
 
 const Window = vaxis.Window;
 
@@ -25,7 +26,7 @@ pub const FindState = struct {
 };
 
 pub const BookmarkState = struct {
-    bookmarks: []const []const u8,
+    bookmarks: []const Bookmark,
     cursor: usize,
     scroll: usize,
 };
@@ -1111,9 +1112,10 @@ fn draw_find_inline(alloc: std.mem.Allocator, win: Window, width: usize, list_he
 }
 
 fn draw_bookmarks(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h: usize, bs: BookmarkState) void {
-    const max_path_len = utils.maxOf([]const u8, bs.bookmarks, struct {
-        fn f(s: []const u8) usize {
-            return s.len;
+    const max_path_len = utils.maxOf(Bookmark, bs.bookmarks, struct {
+        fn f(bk: Bookmark) usize {
+            if (bk.alias) |a| return a.len + 2 + bk.path.len; // "alias: path"
+            return bk.path.len;
         }
     }.f);
     const popup_w: u16 = @intCast(@max(@min(max_path_len + 9, total_w -| 4), 30)); // +9 for indicator + border + padding + right margin
@@ -1158,7 +1160,7 @@ fn draw_bookmarks(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h
         row += 1;
         idx += 1;
     }) {
-        const path = bs.bookmarks[idx];
+        const bk = bs.bookmarks[idx];
         const display_row: u16 = @intCast(row);
         const is_cursor = idx == bs.cursor;
 
@@ -1172,9 +1174,13 @@ fn draw_bookmarks(alloc: std.mem.Allocator, win: Window, total_w: usize, total_h
         }
 
         const indicator: []const u8 = if (is_cursor) " > " else "   ";
-        const max_path = inner_w -| 4;
-        const display_path = if (path.len > max_path) path[path.len - max_path ..] else path;
-        const line = std.fmt.allocPrint(alloc, "{s}{s}", .{ indicator, display_path }) catch continue;
+        const max_display = inner_w -| 4;
+        const line = if (bk.alias) |alias|
+            std.fmt.allocPrint(alloc, "{s}{s}: {s}", .{ indicator, alias, bk.path }) catch continue
+        else blk: {
+            const display_path = if (bk.path.len > max_display) bk.path[bk.path.len - max_display ..] else bk.path;
+            break :blk std.fmt.allocPrint(alloc, "{s}{s}", .{ indicator, display_path }) catch continue;
+        };
         const entry_style: vaxis.Style = if (is_cursor) .{ .reverse = true } else style.file_style;
         _ = popup.printSegment(.{
             .text = line,

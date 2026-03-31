@@ -16,6 +16,11 @@ pub const Event = union(enum) {
     find_batch: scanner_mod.FindBatchResult,
 };
 
+pub const Bookmark = struct {
+    path: []const u8,
+    alias: ?[]const u8,
+};
+
 pub const App = struct {
     allocator: std.mem.Allocator,
     tty: Tty,
@@ -73,7 +78,7 @@ pub const App = struct {
     find_walking: bool,
 
     // Bookmark mode
-    bookmarks: std.ArrayList([]const u8),
+    bookmarks: std.ArrayList(Bookmark),
     bookmark_cursor: usize,
     bookmark_scroll: usize,
 
@@ -221,6 +226,8 @@ pub const App = struct {
             self.draw();
             try self.vx.render(self.tty.writer());
         }
+        // Save current directory as "last" on exit
+        self.update_last_dir();
     }
 
     fn update(self: *App, event: Event) !void {
@@ -1060,6 +1067,7 @@ pub const App = struct {
         const basename = std.fs.path.basename(full_path);
 
         // Navigate to the directory
+        self.update_last_dir();
         try self.dir_state.scan(dir_path);
         self.cursor = 0;
         self.scroll_offset = 0;
@@ -1771,6 +1779,7 @@ pub const App = struct {
         const entry = self.dir_state.get_entry(self.cursor) orelse return;
 
         if (entry.kind == .dir) {
+            self.update_last_dir();
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
             const new_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ self.dir_state.path, entry.name }) catch return;
 
@@ -1890,6 +1899,7 @@ pub const App = struct {
         const path = self.dir_state.path;
         if (std.mem.eql(u8, path, "/")) return;
 
+        self.update_last_dir();
         const last_sep = std.mem.lastIndexOfScalar(u8, path, '/') orelse return;
 
         // Copy parent and basename to stack buffers BEFORE scan resets the name arena
@@ -2037,11 +2047,72 @@ pub const App = struct {
         self.adjust_scroll();
     }
 
+    // ─── LAST DIR ───
+
+    fn is_last_alias(alias: ?[]const u8) bool {
+        const a = alias orelse return false;
+        return std.mem.eql(u8, a, "last");
+    }
+
+    fn find_last_bookmark(self: *App) ?usize {
+        for (self.bookmarks.items, 0..) |bk, i| {
+            if (is_last_alias(bk.alias)) return i;
+        }
+        return null;
+    }
+
+    fn update_last_dir(self: *App) void {
+        // Update or create the "last" bookmark with current dir
+        const cur_path = self.dir_state.path;
+        if (self.find_last_bookmark()) |idx| {
+            // Update existing in memory
+            self.allocator.free(self.bookmarks.items[idx].path);
+            self.bookmarks.items[idx].path = self.allocator.dupe(u8, cur_path) catch return;
+        } else {
+            // Create new
+            const path_duped = self.allocator.dupe(u8, cur_path) catch return;
+            const alias_duped = self.allocator.dupe(u8, "last") catch {
+                self.allocator.free(path_duped);
+                return;
+            };
+            self.bookmarks.append(self.allocator, .{ .path = path_duped, .alias = alias_duped }) catch {
+                self.allocator.free(path_duped);
+                self.allocator.free(alias_duped);
+                return;
+            };
+        }
+        // Save full bookmarks to persist the last dir update
+        self.save_bookmarks();
+    }
+
     // ─── BOOKMARK MODE ───
 
     fn get_bookmarks_path(buf: *[std.fs.max_path_bytes]u8) ?[]const u8 {
         const home = std.posix.getenv("HOME") orelse return null;
         return std.fmt.bufPrint(buf, "{s}/.config/xpl-f/bookmarks", .{home}) catch null;
+    }
+
+    fn parse_bookmark_line(self: *App, line: []const u8) ?Bookmark {
+        if (line.len == 0) return null;
+        // Format: "alias=path" or just "path"
+        if (std.mem.indexOfScalar(u8, line, '=')) |eq_pos| {
+            if (eq_pos > 0 and eq_pos + 1 < line.len) {
+                const alias_part = line[0..eq_pos];
+                const path_part = line[eq_pos + 1 ..];
+                // Only treat as alias if path part looks like an absolute path
+                if (path_part.len > 0 and path_part[0] == '/') {
+                    const alias_duped = self.allocator.dupe(u8, alias_part) catch return null;
+                    const path_duped = self.allocator.dupe(u8, path_part) catch {
+                        self.allocator.free(alias_duped);
+                        return null;
+                    };
+                    return .{ .path = path_duped, .alias = alias_duped };
+                }
+            }
+        }
+        // Plain path
+        const path_duped = self.allocator.dupe(u8, line) catch return null;
+        return .{ .path = path_duped, .alias = null };
     }
 
     fn load_bookmarks(self: *App) void {
@@ -2062,12 +2133,10 @@ pub const App = struct {
         var start: usize = 0;
         for (content, 0..) |c, i| {
             if (c == '\n') {
-                const line = content[start..i];
-                if (line.len > 0) {
-                    const duped = self.allocator.dupe(u8, line) catch break;
-                    self.bookmarks.append(self.allocator, duped) catch {
-                        self.allocator.free(duped);
-                        break;
+                if (self.parse_bookmark_line(content[start..i])) |bk| {
+                    self.bookmarks.append(self.allocator, bk) catch {
+                        self.allocator.free(bk.path);
+                        if (bk.alias) |a| self.allocator.free(a);
                     };
                 }
                 start = i + 1;
@@ -2075,11 +2144,10 @@ pub const App = struct {
         }
         // Last line without trailing newline
         if (start < content.len) {
-            const line = content[start..];
-            if (line.len > 0) {
-                const duped = self.allocator.dupe(u8, line) catch return;
-                self.bookmarks.append(self.allocator, duped) catch {
-                    self.allocator.free(duped);
+            if (self.parse_bookmark_line(content[start..])) |bk| {
+                self.bookmarks.append(self.allocator, bk) catch {
+                    self.allocator.free(bk.path);
+                    if (bk.alias) |a| self.allocator.free(a);
                 };
             }
         }
@@ -2096,24 +2164,38 @@ pub const App = struct {
             else => return,
         };
 
-        std.mem.sortUnstable([]const u8, self.bookmarks.items, {}, struct {
-            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
+        // Sort: "last" always first, then alphabetical by path
+        std.mem.sortUnstable(Bookmark, self.bookmarks.items, {}, struct {
+            fn lessThan(_: void, a: Bookmark, b: Bookmark) bool {
+                const a_last = is_last_alias(a.alias);
+                const b_last = is_last_alias(b.alias);
+                if (a_last and !b_last) return true;
+                if (!a_last and b_last) return false;
+                return std.mem.order(u8, a.path, b.path) == .lt;
             }
         }.lessThan);
 
         const file = std.fs.createFileAbsolute(bk_path, .{ .truncate = true }) catch return;
         defer file.close();
 
-        for (self.bookmarks.items) |path| {
-            _ = file.write(path) catch return;
+        for (self.bookmarks.items) |bk| {
+            if (bk.alias) |alias| {
+                _ = file.write(alias) catch return;
+                _ = file.write("=") catch return;
+            }
+            _ = file.write(bk.path) catch return;
             _ = file.write("\n") catch return;
         }
     }
 
+    fn free_bookmark(self: *App, bk: Bookmark) void {
+        self.allocator.free(bk.path);
+        if (bk.alias) |a| self.allocator.free(a);
+    }
+
     fn free_bookmarks(self: *App) void {
-        for (self.bookmarks.items) |path| {
-            self.allocator.free(path);
+        for (self.bookmarks.items) |bk| {
+            self.free_bookmark(bk);
         }
         self.bookmarks.clearRetainingCapacity();
     }
@@ -2130,11 +2212,12 @@ pub const App = struct {
             break :blk std.fs.cwd().realpath(full, &real_buf) catch full;
         } else self.dir_state.path;
 
-        // Check if already bookmarked
-        for (self.bookmarks.items, 0..) |path, i| {
-            if (std.mem.eql(u8, path, bookmark_path)) {
+        // Check if already bookmarked (skip "last" alias)
+        for (self.bookmarks.items, 0..) |bk, i| {
+            if (is_last_alias(bk.alias)) continue;
+            if (std.mem.eql(u8, bk.path, bookmark_path)) {
                 // Remove it
-                self.allocator.free(path);
+                self.free_bookmark(bk);
                 _ = self.bookmarks.orderedRemove(i);
                 self.save_bookmarks();
                 const msg = std.fmt.bufPrint(&self.message_buf, "Bookmark removed", .{}) catch "Removed";
@@ -2143,9 +2226,9 @@ pub const App = struct {
             }
         }
 
-        // Add new bookmark
+        // Add new bookmark (no alias — user can edit the file to add one)
         const duped = self.allocator.dupe(u8, bookmark_path) catch return;
-        self.bookmarks.append(self.allocator, duped) catch {
+        self.bookmarks.append(self.allocator, .{ .path = duped, .alias = null }) catch {
             self.allocator.free(duped);
             return;
         };
@@ -2213,27 +2296,31 @@ pub const App = struct {
             return;
         }
 
-        const path = self.bookmarks.items[self.bookmark_cursor];
+        const bk = self.bookmarks.items[self.bookmark_cursor];
 
         // Check path exists
-        std.fs.accessAbsolute(path, .{}) catch {
-            const msg = std.fmt.bufPrint(&self.message_buf, "Path not found, removed", .{}) catch "Not found";
-            self.message = msg;
+        std.fs.accessAbsolute(bk.path, .{}) catch {
+            self.message = std.fmt.bufPrint(&self.message_buf, "Path not found, removed", .{}) catch "Not found";
             self.remove_bookmark();
-            self.mode = .normal;
             return;
         };
 
-        self.requestScanAsync(path, .main);
+        // Copy path to stack before update_last_dir potentially frees it
+        var nav_buf: [std.fs.max_path_bytes]u8 = undefined;
+        @memcpy(nav_buf[0..bk.path.len], bk.path);
+        const nav_path = nav_buf[0..bk.path.len];
+
+        self.update_last_dir();
+        self.mode = .normal;
+        self.requestScanAsync(nav_path, .main);
         self.cursor = 0;
         self.scroll_offset = 0;
-        self.mode = .normal;
     }
 
     fn remove_bookmark(self: *App) void {
         if (self.bookmarks.items.len == 0) return;
 
-        self.allocator.free(self.bookmarks.items[self.bookmark_cursor]);
+        self.free_bookmark(self.bookmarks.items[self.bookmark_cursor]);
         _ = self.bookmarks.orderedRemove(self.bookmark_cursor);
         self.save_bookmarks();
 
