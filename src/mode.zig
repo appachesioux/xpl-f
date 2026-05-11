@@ -9,6 +9,7 @@ pub const Mode = enum {
     create,
     find,
     bookmark,
+    clean,
 };
 
 pub const ReplaceField = enum {

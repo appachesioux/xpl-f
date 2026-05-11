@@ -94,7 +94,8 @@ src/
 **Busca & Filtro**
 - `/`: busca fuzzy
 - `r`: search & replace em nomes
-- `?`: busca recursiva
+- `Ctrl-f`: busca recursiva
+- `Ctrl-k`: modo clean (filtros recursivos: size, age, junk, empty dirs, broken symlinks)
 - `\`: tree view
 
 **Operações**
@@ -103,7 +104,7 @@ src/
 - `Ctrl+d`: drag & drop (via ripdrag)
 - `n`: novo arquivo/diretório
 - `Y`: duplicar arquivo
-- `D`: deletar arquivo/seleção
+- `d`: deletar arquivo/seleção
 - `x`: cortar para clipboard
 - `y`: copiar para clipboard
 - `p`: colar (paste)

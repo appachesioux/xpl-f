@@ -6,6 +6,7 @@ const mode_mod = @import("mode.zig");
 const dir_mod = @import("dir.zig");
 const entry_mod = @import("entry.zig");
 const utils = @import("utils.zig");
+const scanner_mod = @import("scanner.zig");
 const Bookmark = @import("app.zig").Bookmark;
 
 const Window = vaxis.Window;
@@ -29,6 +30,20 @@ pub const BookmarkState = struct {
     bookmarks: []const Bookmark,
     cursor: usize,
     scroll: usize,
+};
+
+pub const CleanInputKind = enum { none, size, age };
+
+pub const CleanState = struct {
+    items: []const scanner_mod.CleanItem,
+    filter: scanner_mod.CleanFilter,
+    cursor: usize,
+    scroll: usize,
+    is_walking: bool,
+    total_size: u64,
+    input_kind: CleanInputKind,
+    input_text: []const u8,
+    input_err: ?[]const u8,
 };
 
 pub const PreviewState = struct {
@@ -87,8 +102,9 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "        SEARCH & FILTER",
         "",
         "  /           Search",
+        "  C-f         Find recursive",
+        "  C-k         Clean (filters)",
         "  r           Search & Replace",
-        "  ?           Find recursive",
         "  \\           Tree view",
         "",
         "        OPERATIONS",
@@ -98,7 +114,7 @@ fn draw_help(win: Window, total_w: usize, total_h: usize) void {
         "  C-d         Drag & drop",
         "  n           New file/dir",
         "  Y           Duplicate file",
-        "  D           Delete file",
+        "  d           Delete file",
         "  x           Cut",
         "  F2          Rename (edit mode)",
         "  F3          Preview",
@@ -167,6 +183,7 @@ pub fn draw(
     create_buf: []const u8,
     find_state: ?FindState,
     bookmark_state: ?BookmarkState,
+    clean_state: ?CleanState,
     tree_view_state: ?TreeViewState,
     dest_panel: ?DestPanelState,
     is_scanning: bool,
@@ -220,6 +237,10 @@ pub fn draw(
         if (find_state) |fs| {
             draw_find_inline(alloc, main, inner_w, list_height, fs);
         }
+    } else if (current_mode == .clean) {
+        if (clean_state) |cs| {
+            draw_clean_inline(alloc, main, inner_w, list_height, cs);
+        }
     } else {
         // Draw header
         draw_header(main, inner_w, name_w);
@@ -232,7 +253,7 @@ pub fn draw(
     }
 
     // Draw status bar
-    draw_status(alloc, main, inner_w, inner_h, current_mode, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf, find_state, tree_view_state, is_scanning);
+    draw_status(alloc, main, inner_w, inner_h, current_mode, cursor, dir_state, search_query, message, clip_op, clip_count, create_buf, find_state, clean_state, tree_view_state, is_scanning);
 
     // Draw confirm popup if in confirm mode
     if (current_mode == .confirm) {
@@ -614,6 +635,7 @@ fn draw_status(
     clip_count: usize,
     create_buf: []const u8,
     find_state: ?FindState,
+    clean_state: ?CleanState,
     tree_view_state: ?TreeViewState,
     is_scanning: bool,
 ) void {
@@ -639,6 +661,7 @@ fn draw_status(
         .create => " CREATE ",
         .find => " FIND ",
         .bookmark => " BOOKMARK ",
+        .clean => " CLEAN ",
     };
     const mode_style = switch (current_mode) {
         .normal, .help => style.status_normal_style,
@@ -649,6 +672,7 @@ fn draw_status(
         .preview => style.status_normal_style,
         .create => style.status_search_style,
         .bookmark => style.status_edit_style,
+        .clean => style.status_edit_style,
     };
 
     _ = win.printSegment(.{
@@ -668,18 +692,51 @@ fn draw_status(
             .style = style.status_info_style,
         }, .{ .row_offset = status_row, .col_offset = offset });
     } else if (current_mode == .search) {
-        const info = std.fmt.allocPrint(alloc, "/{s}", .{search_query}) catch return;
+        const info = std.fmt.allocPrint(alloc, "/ {s}", .{search_query}) catch return;
         _ = win.printSegment(.{
             .text = info,
             .style = style.status_info_style,
         }, .{ .row_offset = status_row, .col_offset = offset });
     } else if (current_mode == .find) {
         if (find_state) |fs| {
-            const info = std.fmt.allocPrint(alloc, "?{s}", .{fs.query}) catch return;
+            const info = std.fmt.allocPrint(alloc, "? {s}", .{fs.query}) catch return;
             _ = win.printSegment(.{
                 .text = info,
                 .style = style.status_info_style,
             }, .{ .row_offset = status_row, .col_offset = offset });
+        }
+    } else if (current_mode == .clean) {
+        if (clean_state) |cs| {
+            if (cs.input_kind != .none) {
+                const label: []const u8 = switch (cs.input_kind) {
+                    .size => "size: ",
+                    .age => "age: ",
+                    .none => "",
+                };
+                const info = std.fmt.allocPrint(alloc, "{s}{s}", .{ label, cs.input_text }) catch return;
+                _ = win.printSegment(.{
+                    .text = info,
+                    .style = style.status_info_style,
+                }, .{ .row_offset = status_row, .col_offset = offset });
+                const cursor_col = offset + @as(u16, @intCast(info.len));
+                win.showCursor(cursor_col, status_row);
+
+                if (cs.input_err) |err| {
+                    const err_text = std.fmt.allocPrint(alloc, "  ({s})", .{err}) catch "";
+                    _ = win.printSegment(.{
+                        .text = err_text,
+                        .style = style.error_style,
+                    }, .{ .row_offset = status_row, .col_offset = cursor_col + 1 });
+                }
+            } else {
+                var sbuf: [16]u8 = undefined;
+                const total_str = format_bytes(&sbuf, cs.total_size);
+                const info = std.fmt.allocPrint(alloc, "{d} items  {s}", .{ cs.items.len, total_str }) catch return;
+                _ = win.printSegment(.{
+                    .text = info,
+                    .style = style.status_info_style,
+                }, .{ .row_offset = status_row, .col_offset = offset });
+            }
         }
     } else if (current_mode == .create) {
         const hint: []const u8 = if (create_buf.len > 0 and create_buf[create_buf.len - 1] == '/') "(dir) " else "(file) ";
@@ -723,6 +780,19 @@ fn draw_status(
         if (find_state) |fs| {
             const walking_indicator: []const u8 = if (fs.is_walking) "..." else "";
             const right_text = std.fmt.allocPrint(alloc, " {d}/{d}{s} ", .{ fs.filtered.len, fs.results.items.len, walking_indicator }) catch return;
+            const hint_col: u16 = @intCast(width -| right_text.len);
+            _ = win.printSegment(.{
+                .text = right_text,
+                .style = style.status_normal_style,
+            }, .{ .row_offset = status_row, .col_offset = hint_col });
+        }
+    } else if (current_mode == .clean) {
+        if (clean_state) |cs| {
+            const walking_indicator: []const u8 = if (cs.is_walking) " ..." else "";
+            const right_text: []const u8 = if (cs.input_kind != .none)
+                std.fmt.allocPrint(alloc, " Enter=apply Esc=cancel{s} ", .{walking_indicator}) catch return
+            else
+                std.fmt.allocPrint(alloc, " s=size a=age n=junk e=dirs l=links r=rescan{s} ", .{walking_indicator}) catch return;
             const hint_col: u16 = @intCast(width -| right_text.len);
             _ = win.printSegment(.{
                 .text = right_text,
@@ -1104,6 +1174,126 @@ fn draw_find_inline(alloc: std.mem.Allocator, win: Window, width: usize, list_he
 
         const indicator: []const u8 = if (is_cursor) "> " else "  ";
         const line = std.fmt.allocPrint(alloc, "{s}{s}", .{ indicator, path }) catch continue;
+        _ = win.printSegment(.{
+            .text = line,
+            .style = entry_style,
+        }, .{ .row_offset = display_row, .col_offset = 0 });
+    }
+}
+
+fn format_bytes(buf: []u8, bytes: u64) []const u8 {
+    const f: f64 = @floatFromInt(bytes);
+    if (bytes < 1024) return std.fmt.bufPrint(buf, "{d}B", .{bytes}) catch "-";
+    if (bytes < 1024 * 1024) return std.fmt.bufPrint(buf, "{d:.1}K", .{f / 1024.0}) catch "-";
+    if (bytes < 1024 * 1024 * 1024) return std.fmt.bufPrint(buf, "{d:.1}M", .{f / (1024.0 * 1024.0)}) catch "-";
+    return std.fmt.bufPrint(buf, "{d:.2}G", .{f / (1024.0 * 1024.0 * 1024.0)}) catch "-";
+}
+
+fn reason_label(r: scanner_mod.CleanReason) []const u8 {
+    return switch (r) {
+        .size_match => "size",
+        .age_match => "age",
+        .name_pattern => "junk",
+        .empty_dir => "emptydir",
+        .broken_link => "broken",
+    };
+}
+
+fn size_cond_str(buf: []u8, c: scanner_mod.SizeCond) []const u8 {
+    const op: []const u8 = switch (c.op) {
+        .eq => "=",
+        .ge => ">=",
+        .le => "<=",
+    };
+    var num_buf: [16]u8 = undefined;
+    const num_str = format_bytes(&num_buf, c.value);
+    return std.fmt.bufPrint(buf, "{s}{s}", .{ op, num_str }) catch "?";
+}
+
+fn age_cond_str(buf: []u8, c: scanner_mod.AgeCond) []const u8 {
+    const op: []const u8 = switch (c.op) {
+        .gt => ">",
+        .lt => "<",
+    };
+    return std.fmt.bufPrint(buf, "{s}{d}d", .{ op, c.days }) catch "?";
+}
+
+fn draw_clean_inline(alloc: std.mem.Allocator, win: Window, width: usize, list_height: usize, cs: CleanState) void {
+    var size_buf: [32]u8 = undefined;
+    const size_part: []const u8 = if (cs.filter.size) |c|
+        std.fmt.allocPrint(alloc, "[x]s {s}", .{size_cond_str(&size_buf, c)}) catch "[x]s"
+    else
+        "[ ]s size";
+    var age_buf: [32]u8 = undefined;
+    const age_part: []const u8 = if (cs.filter.age) |c|
+        std.fmt.allocPrint(alloc, "[x]a {s}", .{age_cond_str(&age_buf, c)}) catch "[x]a"
+    else
+        "[ ]a age";
+
+    const filter_line = std.fmt.allocPrint(
+        alloc,
+        " {s}  {s}  [{s}]n-junk  [{s}]e-dirs  [{s}]l-links",
+        .{
+            size_part,
+            age_part,
+            if (cs.filter.name_patterns) "x" else " ",
+            if (cs.filter.empty_dirs) "x" else " ",
+            if (cs.filter.broken_symlinks) "x" else " ",
+        },
+    ) catch return;
+
+    // Background fill on header + separator rows
+    for (0..width) |x| {
+        win.writeCell(@intCast(x), HEADER_ROW, .{
+            .char = .{ .grapheme = " ", .width = 1 },
+            .style = style.header_style,
+        });
+    }
+    _ = win.printSegment(.{
+        .text = filter_line,
+        .style = style.header_style,
+    }, .{ .row_offset = HEADER_ROW, .col_offset = 0 });
+
+    // Separator under filter
+    for (0..width) |x| {
+        win.writeCell(@intCast(x), SEPARATOR_ROW, .{
+            .char = .{ .grapheme = "─", .width = 1 },
+            .style = style.dim_style,
+        });
+    }
+
+    // List items
+    var row: usize = 0;
+    var idx = cs.scroll;
+    while (row < list_height and idx < cs.items.len) : ({
+        row += 1;
+        idx += 1;
+    }) {
+        const it = cs.items[idx];
+        const display_row: u16 = @intCast(row + ENTRIES_ROW);
+        const is_cursor = idx == cs.cursor;
+
+        var entry_style: vaxis.Style = switch (it.kind) {
+            .dir => style.dir_style,
+            .symlink => style.symlink_style,
+            .file => style.file_style,
+            .other => style.dim_style,
+        };
+        if (is_cursor) entry_style.reverse = true;
+
+        for (0..width) |x| {
+            win.writeCell(@intCast(x), display_row, .{
+                .char = .{ .grapheme = " ", .width = 1 },
+                .style = entry_style,
+            });
+        }
+
+        var item_size_buf: [16]u8 = undefined;
+        const size_str = if (it.kind == .dir) "-" else format_bytes(&item_size_buf, it.size);
+        const reason_str = reason_label(it.reason);
+        const indicator: []const u8 = if (is_cursor) "> " else "  ";
+
+        const line = std.fmt.allocPrint(alloc, "{s}[{s:<8}] {s:>8}  {s}", .{ indicator, reason_str, size_str, it.path }) catch continue;
         _ = win.printSegment(.{
             .text = line,
             .style = entry_style,

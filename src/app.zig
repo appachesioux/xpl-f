@@ -14,12 +14,15 @@ pub const Event = union(enum) {
     winsize: vaxis.Winsize,
     scan_complete: scanner_mod.ScanResult,
     find_batch: scanner_mod.FindBatchResult,
+    clean_batch: scanner_mod.CleanBatchResult,
 };
 
 pub const Bookmark = struct {
     path: []const u8,
     alias: ?[]const u8,
 };
+
+pub const CleanInputKind = enum { none, size, age };
 
 pub const App = struct {
     allocator: std.mem.Allocator,
@@ -81,6 +84,22 @@ pub const App = struct {
     bookmarks: std.ArrayList(Bookmark),
     bookmark_cursor: usize,
     bookmark_scroll: usize,
+
+    // Clean mode (recursive cleanup scan)
+    clean_items: std.ArrayList(scanner_mod.CleanItem),
+    clean_arenas: std.ArrayList(std.heap.ArenaAllocator),
+    clean_filter: scanner_mod.CleanFilter,
+    clean_cursor: usize,
+    clean_scroll: usize,
+    clean_walking: bool,
+    clean_total_size: u64,
+    clean_saved_path: ?[]const u8,
+    clean_saved_cursor: usize,
+    clean_saved_scroll: usize,
+    clean_arena: std.heap.ArenaAllocator,
+    clean_input_kind: CleanInputKind,
+    clean_input_buf: std.ArrayList(u8),
+    clean_input_err: ?[]const u8,
 
     // Tree view
     show_tree: bool,
@@ -149,6 +168,20 @@ pub const App = struct {
             .bookmarks = .{},
             .bookmark_cursor = 0,
             .bookmark_scroll = 0,
+            .clean_items = .{},
+            .clean_arenas = .{},
+            .clean_filter = .{},
+            .clean_cursor = 0,
+            .clean_scroll = 0,
+            .clean_walking = false,
+            .clean_total_size = 0,
+            .clean_saved_path = null,
+            .clean_saved_cursor = 0,
+            .clean_saved_scroll = 0,
+            .clean_arena = std.heap.ArenaAllocator.init(allocator),
+            .clean_input_kind = .none,
+            .clean_input_buf = .{},
+            .clean_input_err = null,
             .show_tree = false,
             .tree_lines = .{},
             .tree_scroll = 0,
@@ -208,6 +241,11 @@ pub const App = struct {
         self.find_arena.deinit();
         self.free_bookmarks();
         self.bookmarks.deinit(self.allocator);
+        self.clean_items.deinit(self.allocator);
+        self.free_clean_arenas();
+        self.clean_arenas.deinit(self.allocator);
+        self.clean_arena.deinit();
+        self.clean_input_buf.deinit(self.allocator);
         self.scanner.deinit();
         self.frame_arena.deinit();
         self.dir_state.deinit();
@@ -239,6 +277,9 @@ pub const App = struct {
             .find_batch => |result| {
                 self.handleFindBatch(result);
             },
+            .clean_batch => |result| {
+                self.handleCleanBatch(result);
+            },
             .key_press => |key| {
                 self.message = null;
                 switch (self.mode) {
@@ -252,6 +293,7 @@ pub const App = struct {
                     .create => try self.handle_create(key),
                     .find => try self.handle_find(key),
                     .bookmark => try self.handle_bookmark(key),
+                    .clean => try self.handle_clean(key),
                 }
             },
         }
@@ -296,6 +338,22 @@ pub const App = struct {
             .scroll = self.bookmark_scroll,
         } else null;
 
+        const clean_state: ?render.CleanState = if (self.mode == .clean) .{
+            .items = self.clean_items.items,
+            .filter = self.clean_filter,
+            .cursor = self.clean_cursor,
+            .scroll = self.clean_scroll,
+            .is_walking = self.clean_walking,
+            .total_size = self.clean_total_size,
+            .input_kind = switch (self.clean_input_kind) {
+                .none => .none,
+                .size => .size,
+                .age => .age,
+            },
+            .input_text = self.clean_input_buf.items,
+            .input_err = self.clean_input_err,
+        } else null;
+
         const tree_view_state: ?render.TreeViewState = if (self.show_tree) .{
             .lines = self.tree_lines.items,
             .scroll = self.tree_scroll,
@@ -327,12 +385,14 @@ pub const App = struct {
             self.create_buf.items,
             find_state,
             bookmark_state,
+            clean_state,
             tree_view_state,
             dest_panel_state,
             self.is_scanning,
         );
 
-        if (self.mode != .edit and self.mode != .replace and self.mode != .create) {
+        const clean_input_active = self.mode == .clean and self.clean_input_kind != .none;
+        if (self.mode != .edit and self.mode != .replace and self.mode != .create and !clean_input_active) {
             win.hideCursor();
         }
     }
@@ -431,6 +491,45 @@ pub const App = struct {
         self.find_batch_arenas.clearRetainingCapacity();
     }
 
+    fn free_clean_arenas(self: *App) void {
+        for (self.clean_arenas.items) |*arena| {
+            arena.deinit();
+        }
+        self.clean_arenas.clearRetainingCapacity();
+    }
+
+    fn handleCleanBatch(self: *App, result: scanner_mod.CleanBatchResult) void {
+        if (result.generation != self.scanner.clean_generation.load(.seq_cst)) {
+            var arena = result.arena;
+            arena.deinit();
+            var items = result.items;
+            items.deinit(self.allocator);
+            return;
+        }
+
+        if (self.mode != .clean) {
+            var arena = result.arena;
+            arena.deinit();
+            var items = result.items;
+            items.deinit(self.allocator);
+            return;
+        }
+
+        for (result.items.items) |it| {
+            self.clean_items.append(self.allocator, it) catch continue;
+            self.clean_total_size +%= it.size;
+        }
+
+        self.clean_arenas.append(self.allocator, result.arena) catch {};
+
+        var items = result.items;
+        items.deinit(self.allocator);
+
+        if (result.is_final) {
+            self.clean_walking = false;
+        }
+    }
+
     // ─── NORMAL MODE ───
 
     fn handle_normal(self: *App, key: vaxis.Key) !void {
@@ -515,8 +614,10 @@ pub const App = struct {
         } else if (key.matches('/', .{})) {
             self.mode = .search;
             self.search_buf.clearRetainingCapacity();
-        } else if (key.matches('?', .{})) {
+        } else if (key.matches('f', .{ .ctrl = true })) {
             try self.enter_find_mode();
+        } else if (key.matches('k', .{ .ctrl = true })) {
+            try self.enter_clean_mode();
         }
         // Selection & clipboard
         else if (key.matches(' ', .{})) {
@@ -557,7 +658,7 @@ pub const App = struct {
         } else if (key.matches('n', .{})) {
             self.mode = .create;
             self.create_buf.clearRetainingCapacity();
-        } else if (key.matches('D', .{})) {
+        } else if (key.matches('d', .{})) {
             try self.delete_selected();
 
         } else if (key.matches('\\', .{})) {
@@ -698,30 +799,36 @@ pub const App = struct {
         }
 
         if (key.matches(vaxis.Key.enter, .{})) {
-            // Guarda o nome do item selecionado antes de limpar o filtro
-            const selected_name = if (self.dir_state.get_entry(self.cursor)) |e| e.name else null;
-
+            // Sai do modo de input mas mantém o filtro ativo (igual ao top-q).
+            // O usuário pode navegar j/k pela lista filtrada e usa Esc para limpar.
             self.mode = .normal;
-            self.search_buf.clearRetainingCapacity();
-            self.dir_state.search_query.clearRetainingCapacity();
-            try self.dir_state.apply_filter();
-
-            // Posiciona o cursor no item que estava selecionado
-            if (selected_name) |name| {
-                for (0..self.dir_state.entry_count()) |i| {
-                    if (self.dir_state.get_entry(i)) |e| {
-                        if (std.mem.eql(u8, e.name, name)) {
-                            self.cursor = i;
-                            self.adjust_scroll();
-                            break;
-                        }
-                    }
-                }
-            } else {
-                self.cursor = 0;
-                self.scroll_offset = 0;
-            }
+            self.adjust_scroll();
             return;
+
+            // // Comportamento antigo: Enter limpava o filtro e posicionava
+            // // o cursor no item selecionado, perdendo os demais resultados.
+            // const selected_name = if (self.dir_state.get_entry(self.cursor)) |e| e.name else null;
+            //
+            // self.mode = .normal;
+            // self.search_buf.clearRetainingCapacity();
+            // self.dir_state.search_query.clearRetainingCapacity();
+            // try self.dir_state.apply_filter();
+            //
+            // if (selected_name) |name| {
+            //     for (0..self.dir_state.entry_count()) |i| {
+            //         if (self.dir_state.get_entry(i)) |e| {
+            //             if (std.mem.eql(u8, e.name, name)) {
+            //                 self.cursor = i;
+            //                 self.adjust_scroll();
+            //                 break;
+            //             }
+            //         }
+            //     }
+            // } else {
+            //     self.cursor = 0;
+            //     self.scroll_offset = 0;
+            // }
+            // return;
         }
 
         if (key.matches(vaxis.Key.backspace, .{})) {
@@ -2344,4 +2451,294 @@ pub const App = struct {
         }
     }
 
+    // ─── CLEAN MODE ───
+
+    fn enter_clean_mode(self: *App) !void {
+        if (self.scanner.clean_thread != null) {
+            self.scanner.cancelClean();
+        }
+        self.clean_walking = false;
+        self.clean_items.clearRetainingCapacity();
+        self.free_clean_arenas();
+        self.clean_total_size = 0;
+        _ = self.clean_arena.reset(.retain_capacity);
+
+        const arena_alloc = self.clean_arena.allocator();
+        self.clean_saved_path = try arena_alloc.dupe(u8, self.dir_state.path);
+        self.clean_saved_cursor = self.cursor;
+        self.clean_saved_scroll = self.scroll_offset;
+        self.clean_cursor = 0;
+        self.clean_scroll = 0;
+        self.clean_filter = .{};
+        self.clean_input_kind = .none;
+        self.clean_input_buf.clearRetainingCapacity();
+        self.clean_input_err = null;
+
+        self.mode = .clean;
+    }
+
+    fn clean_open_input(self: *App, kind: CleanInputKind) void {
+        self.clean_input_kind = kind;
+        self.clean_input_buf.clearRetainingCapacity();
+        self.clean_input_err = null;
+        // Pre-fill with current value
+        switch (kind) {
+            .size => {
+                if (self.clean_filter.size) |c| {
+                    const op_str: []const u8 = switch (c.op) {
+                        .eq => "=",
+                        .ge => ">=",
+                        .le => "<=",
+                    };
+                    var buf: [32]u8 = undefined;
+                    const formatted = format_size_compact(&buf, c.value);
+                    self.clean_input_buf.appendSlice(self.allocator, op_str) catch {};
+                    self.clean_input_buf.appendSlice(self.allocator, formatted) catch {};
+                }
+            },
+            .age => {
+                if (self.clean_filter.age) |c| {
+                    const op_str: []const u8 = switch (c.op) {
+                        .gt => ">",
+                        .lt => "<",
+                    };
+                    var buf: [32]u8 = undefined;
+                    const days_str = std.fmt.bufPrint(&buf, "{d}d", .{c.days}) catch "";
+                    self.clean_input_buf.appendSlice(self.allocator, op_str) catch {};
+                    self.clean_input_buf.appendSlice(self.allocator, days_str) catch {};
+                }
+            },
+            .none => {},
+        }
+    }
+
+    fn clean_close_input(self: *App) void {
+        self.clean_input_kind = .none;
+        self.clean_input_buf.clearRetainingCapacity();
+        self.clean_input_err = null;
+    }
+
+    fn parse_err_label(err: scanner_mod.ParseError) []const u8 {
+        return switch (err) {
+            error.Empty => "empty",
+            error.BadOperator => "bad op (use =, >=, <=, >, <)",
+            error.BadNumber => "bad number",
+            error.BadSuffix => "bad suffix (use K/M/G)",
+            error.BadUnit => "missing 'd' suffix",
+        };
+    }
+
+    fn format_size_compact(buf: []u8, bytes: u64) []const u8 {
+        if (bytes == 0) return std.fmt.bufPrint(buf, "0", .{}) catch "0";
+        if (bytes % (1024 * 1024 * 1024) == 0) return std.fmt.bufPrint(buf, "{d}G", .{bytes / (1024 * 1024 * 1024)}) catch "";
+        if (bytes % (1024 * 1024) == 0) return std.fmt.bufPrint(buf, "{d}M", .{bytes / (1024 * 1024)}) catch "";
+        if (bytes % 1024 == 0) return std.fmt.bufPrint(buf, "{d}K", .{bytes / 1024}) catch "";
+        return std.fmt.bufPrint(buf, "{d}", .{bytes}) catch "";
+    }
+
+    fn clean_apply_input(self: *App) void {
+        const s = self.clean_input_buf.items;
+        switch (self.clean_input_kind) {
+            .size => {
+                if (s.len == 0) {
+                    self.clean_filter.size = null;
+                } else {
+                    self.clean_filter.size = scanner_mod.parseSizeExpr(s) catch |err| {
+                        self.clean_input_err = parse_err_label(err);
+                        return;
+                    };
+                }
+            },
+            .age => {
+                if (s.len == 0) {
+                    self.clean_filter.age = null;
+                } else {
+                    self.clean_filter.age = scanner_mod.parseAgeExpr(s) catch |err| {
+                        self.clean_input_err = parse_err_label(err);
+                        return;
+                    };
+                }
+            },
+            .none => return,
+        }
+        self.clean_close_input();
+        self.clean_rescan();
+    }
+
+    fn clean_rescan(self: *App) void {
+        self.scanner.cancelClean();
+        self.clean_items.clearRetainingCapacity();
+        self.free_clean_arenas();
+        self.clean_total_size = 0;
+        self.clean_cursor = 0;
+        self.clean_scroll = 0;
+
+        if (!self.clean_filter.any_active()) {
+            self.clean_walking = false;
+            return;
+        }
+
+        self.clean_walking = true;
+        self.scanner.requestClean(
+            self.dir_state.path,
+            self.dir_state.show_hidden,
+            self.clean_filter,
+            10000,
+        );
+    }
+
+    fn handle_clean(self: *App, key: vaxis.Key) !void {
+        // ── Input sub-mode (typing size/age expression) ──
+        if (self.clean_input_kind != .none) {
+            if (key.matches(vaxis.Key.escape, .{})) {
+                self.clean_close_input();
+                return;
+            }
+            if (key.matches(vaxis.Key.enter, .{})) {
+                self.clean_apply_input();
+                return;
+            }
+            if (key.matches(vaxis.Key.backspace, .{})) {
+                if (self.clean_input_buf.items.len > 0) {
+                    _ = self.clean_input_buf.pop();
+                }
+                self.clean_input_err = null;
+                return;
+            }
+            if (key.text) |text| {
+                try self.clean_input_buf.appendSlice(self.allocator, text);
+                self.clean_input_err = null;
+                return;
+            }
+            if (key.codepoint >= 32 and key.codepoint < 127) {
+                try self.clean_input_buf.append(self.allocator, @intCast(key.codepoint));
+                self.clean_input_err = null;
+                return;
+            }
+            return;
+        }
+
+        // ── Normal clean mode ──
+        if (key.matches(vaxis.Key.escape, .{}) or key.matches('q', .{})) {
+            if (self.clean_walking) {
+                self.scanner.cancelClean();
+                self.clean_walking = false;
+            }
+            self.cursor = self.clean_saved_cursor;
+            self.scroll_offset = self.clean_saved_scroll;
+            self.mode = .normal;
+            return;
+        }
+
+        // Open input prompts
+        if (key.matches('s', .{})) {
+            self.clean_open_input(.size);
+            return;
+        }
+        if (key.matches('a', .{})) {
+            self.clean_open_input(.age);
+            return;
+        }
+
+        // Boolean filter toggles
+        if (key.matches('n', .{})) {
+            self.clean_filter.name_patterns = !self.clean_filter.name_patterns;
+            self.clean_rescan();
+            return;
+        }
+        if (key.matches('e', .{})) {
+            self.clean_filter.empty_dirs = !self.clean_filter.empty_dirs;
+            self.clean_rescan();
+            return;
+        }
+        if (key.matches('l', .{})) {
+            self.clean_filter.broken_symlinks = !self.clean_filter.broken_symlinks;
+            self.clean_rescan();
+            return;
+        }
+        if (key.matches('r', .{})) {
+            self.clean_rescan();
+            return;
+        }
+
+        // Navigation in result list
+        if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+            if (self.clean_items.items.len > 0 and self.clean_cursor + 1 < self.clean_items.items.len) {
+                self.clean_cursor += 1;
+                self.adjust_clean_scroll();
+            }
+            return;
+        }
+        if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+            if (self.clean_cursor > 0) {
+                self.clean_cursor -= 1;
+                self.adjust_clean_scroll();
+            }
+            return;
+        }
+        if (key.matches(vaxis.Key.home, .{})) {
+            self.clean_cursor = 0;
+            self.clean_scroll = 0;
+            return;
+        }
+        if (key.matches(vaxis.Key.end, .{})) {
+            if (self.clean_items.items.len > 0) {
+                self.clean_cursor = self.clean_items.items.len - 1;
+                self.adjust_clean_scroll();
+            }
+            return;
+        }
+        if (key.matches(vaxis.Key.enter, .{})) {
+            try self.clean_navigate();
+            return;
+        }
+    }
+
+    fn adjust_clean_scroll(self: *App) void {
+        const win = self.vx.window();
+        const visible = if (win.height > 8) win.height - 8 else 1;
+        if (self.clean_cursor < self.clean_scroll) {
+            self.clean_scroll = self.clean_cursor;
+        } else if (self.clean_cursor >= self.clean_scroll + visible) {
+            self.clean_scroll = self.clean_cursor - visible + 1;
+        }
+    }
+
+    fn clean_navigate(self: *App) !void {
+        if (self.clean_items.items.len == 0) return;
+        if (self.clean_walking) {
+            self.scanner.cancelClean();
+            self.clean_walking = false;
+        }
+
+        const it = self.clean_items.items[self.clean_cursor];
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ self.dir_state.path, it.path }) catch return;
+
+        const dir_path = std.fs.path.dirname(full_path) orelse return;
+        const basename = std.fs.path.basename(full_path);
+
+        // For empty_dir, navigate into the dir itself; otherwise navigate to parent
+        const target_dir = if (it.kind == .dir and it.reason == .empty_dir) full_path else dir_path;
+        const target_basename: ?[]const u8 = if (it.kind == .dir and it.reason == .empty_dir) null else basename;
+
+        self.update_last_dir();
+        try self.dir_state.scan(target_dir);
+        self.cursor = 0;
+        self.scroll_offset = 0;
+
+        if (target_basename) |bn| {
+            for (self.dir_state.filtered_entries.items, 0..) |real_idx, i| {
+                const e = self.dir_state.all_entries.items[real_idx];
+                if (std.mem.eql(u8, e.name, bn)) {
+                    self.cursor = i;
+                    self.adjust_scroll();
+                    break;
+                }
+            }
+        }
+
+        self.mode = .normal;
+    }
 };
